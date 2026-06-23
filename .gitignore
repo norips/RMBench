@@ -22,10 +22,10 @@ assets/*
 
 policy/weights/*
 
-envs/curobo/*
-
 .vscode
 /config.json
 
 /*.json*
-/*.txt
+/*.txt# pixi environments
+.pixi/*
+!.pixi/config.toml

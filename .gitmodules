@@ -1,0 +1,3 @@
+[submodule "envs/curobo"]
+	path = envs/curobo
+	url = https://github.com/NVlabs/curobo.git
