@@ -136,7 +136,8 @@ huggingface-hub = ">=0.25.0"
 
 [feature.mem0.tasks]
 eval = "bash script/run_eval_mem0.sh"
-download-assets = "bash script/_download_mem0_assets.sh"
+download-assets-mem0 = "bash script/_download_mem0_assets.sh"
+setup = { depends-on = ["patch-libs", "download-assets", "download-data", "download-assets-mem0"] }
 
 # ================= ENVIRONMENTS =================
 # Each = default feature (python) + its own feature. Independent solves.
