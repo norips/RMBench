@@ -291,7 +291,6 @@ class MemoryMattersExecutor(nn.Module):
         
         
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     from omegaconf import OmegaConf
     import argparse
     parser = argparse.ArgumentParser()
