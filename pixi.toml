@@ -1,0 +1,145 @@
+[workspace]
+authors = ["Raphael Druon <raphdruon@gmail.com>"]
+channels = ["https://prefix.dev/conda-forge"]
+name = "RMBench"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[system-requirements]
+cuda = "12.0"
+
+# ================= DEFAULT FEATURE: python only =================
+# Included in BOTH environments. Holds nothing that can pin torch/cuda.
+[dependencies]
+python = "3.10.*"
+pip = ">=24,<25"
+
+# Shared tasks — they run in whichever environment you invoke them under,
+# so `pixi run patch-libs` patches main, `pixi run -e mem0 patch-libs` patches mem0.
+[tasks]
+patch-libs = "bash script/patch_libs.sh"
+download-assets = "bash script/_download_assets.sh"
+download-data = "bash script/_download_data.sh"
+setup = { depends-on = ["patch-libs", "download-assets", "download-data"] }
+
+# ================= MAIN FEATURE: the torch 2.4.1 stack =================
+[feature.main.dependencies]
+pytorch-gpu = "=2.4.1"
+cuda-version = "12.8.*"
+numpy = "<2"
+
+[feature.main.pypi-dependencies]
+pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git", branch = "stable" }
+nvidia-curobo = { path = "envs/curobo", editable = true }
+torchvision = ">=0.19.1, <0.20"
+transforms3d = "==0.4.2"
+sapien = "==3.0.0b1"
+scipy = "==1.10.1"
+mplib = "==0.2.1"
+gymnasium = "==0.29.1"
+trimesh = "==4.4.3"
+open3d = "==0.18.0"
+imageio = ">=2.37.3, <3"
+pydantic = ">=2.13.4, <3"
+zarr = ">=2.18.3, <3"
+openai = ">=2.43.0, <3"
+huggingface-hub = "==0.25.0"
+h5py = ">=3.16.0, <4"
+azure = "==4.0.0"
+azure-ai-inference = ">=1.0.0b9, <2"
+pyglet = "<2"
+wandb = ">=0.28.0, <0.29"
+moviepy = ">=2.2.1, <3"
+termcolor = ">=3.3.0, <4"
+av = ">=17.1.0, <18"
+matplotlib = ">=3.10.9, <4"
+ffmpeg = ">=1.4, <2"
+
+[feature.main.pypi-options]
+no-build-isolation = ["pytorch3d", "nvidia-curobo"]
+
+# ================= MEM0 FEATURE: the torch 2.6.0 / cu124 stack =================
+[feature.mem0.dependencies]
+ffmpeg = "*"
+pytorch-gpu = "=2.6.0"
+torchvision = "=0.21.0"
+torchaudio  = "=2.6.0"
+cuda-version = "12.6.*"
+flash-attn    = "==2.7.4"
+numpy = "<2"
+cuda-nvcc = "*"
+cuda-toolkit = "*"     # trim to just cuda-nvcc if curobo's build doesn't need full headers
+ninja = "*"
+setuptools = "69.*"
+wheel = "*"
+packaging = "*"
+psutil = "*"
+termcolor = "*"
+
+[feature.mem0.pypi-options]
+no-build-isolation = ["pytorch3d", "nvidia-curobo", "flash-attn"]
+
+[feature.mem0.pypi-dependencies]
+# torch family pinned to the cu124 index per-package so PyPI can't shadow them
+
+
+# source builds — resolved + built inside the solve, after torch lands
+pytorch3d     = { git = "https://github.com/facebookresearch/pytorch3d.git", branch = "stable" }
+nvidia-curobo = { path = "envs/curobo", editable = true }
+
+# model stack (was your dependency-overrides + requirements.txt)
+transformers = "==4.57.1"
+accelerate = "==1.5.2"
+deepspeed = "==0.16.9"
+tiktoken = "*"
+einops = "*"
+transformers_stream_generator = "==0.0.4"
+qwen-vl-utils = "*"
+diffusers = "*"
+timm = "*"
+omegaconf = "*"
+numpydantic = "==1.6.9"
+albumentations = "==1.4.18"
+decord = "==0.6.0"
+pyarrow = ">=15.0.0"
+fastparquet = "==2024.11.0"
+av = ">=14.2.0"
+websocket-client = "==1.8.0"
+tensorboard = "*"
+wandb = "*"
+rich = "*"
+pyyaml = "*"
+filelock = "*"
+h5py = "==3.16.0"
+numpy = "==1.26.4"
+scipy = "==1.10.1"
+scikit-learn = "*"
+pillow = "*"
+matplotlib = "*"
+warp-lang = "==1.3.0"
+
+# sim runtime (mem0 needs these directly now)
+sapien = "==3.0.0b1"
+mplib = "==0.2.1"
+gymnasium = "==0.29.1"
+trimesh = "==4.4.3"
+open3d = "==0.18.0"
+transforms3d = "==0.4.2"
+openai = ">=2.43.0, <3"
+
+# dev tooling (optional)
+black = "==25.9.0"
+flake8 = "==7.3.0"
+isort = "==5.13.0"
+pre-commit = "*"
+huggingface-hub = ">=0.25.0"
+
+[feature.mem0.tasks]
+eval = "bash script/run_eval_mem0.sh"
+download-assets = "bash script/_download_mem0_assets.sh"
+
+# ================= ENVIRONMENTS =================
+# Each = default feature (python) + its own feature. Independent solves.
+[environments]
+default = { features = ["main"] }
+mem0 = { features = ["mem0"] }

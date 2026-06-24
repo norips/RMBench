@@ -311,6 +311,7 @@ def eval_policy(task_name,
         reset_func(model)
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
             observation = TASK_ENV.get_obs()
+            print("Step:", TASK_ENV.take_action_cnt, " | Max Reward:", TASK_ENV.max_reward)
             eval_func(TASK_ENV, model, observation)
             if TASK_ENV.eval_success:
                 succ = True
