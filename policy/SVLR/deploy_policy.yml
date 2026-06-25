@@ -1,0 +1,10 @@
+# Basic experiment configuration (keep unchanged)
+policy_name: SVLR
+task_name: null
+task_config: null
+ckpt_setting: null
+seed: 0
+instruction_type: unseen
+global_task: null
+
+# Add Parameters You Need

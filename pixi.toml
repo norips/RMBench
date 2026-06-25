@@ -139,8 +139,90 @@ eval = "bash script/run_eval_mem0.sh"
 download-assets-mem0 = "bash script/_download_mem0_assets.sh"
 setup = { depends-on = ["patch-libs", "download-assets", "download-data", "download-assets-mem0"] }
 
+# ================= MEM0 FEATURE: the torch 2.6.0 / cu124 stack =================
+[feature.svlr.dependencies]
+ffmpeg = "*"
+pytorch-gpu = "=2.6.0"
+torchvision = "=0.21.0"
+torchaudio  = "=2.6.0"
+cuda-version = "12.6.*"
+flash-attn    = "==2.7.4"
+numpy = "<2"
+cuda-nvcc = "*"
+cuda-toolkit = "*"     # trim to just cuda-nvcc if curobo's build doesn't need full headers
+ninja = "*"
+setuptools = "69.*"
+wheel = "*"
+packaging = "*"
+psutil = "*"
+termcolor = "*"
+fastapi = ">=0.138.0,<0.139"
+
+[feature.svlr.pypi-options]
+no-build-isolation = ["pytorch3d", "nvidia-curobo", "flash-attn"]
+
+[feature.svlr.pypi-dependencies]
+# torch family pinned to the cu124 index per-package so PyPI can't shadow them
+
+
+# source builds — resolved + built inside the solve, after torch lands
+pytorch3d     = { git = "https://github.com/facebookresearch/pytorch3d.git", branch = "stable" }
+nvidia-curobo = { path = "envs/curobo", editable = true }
+
+# model stack (was your dependency-overrides + requirements.txt)
+transformers = "==4.57.1"
+accelerate = "==1.5.2"
+deepspeed = "==0.16.9"
+tiktoken = "*"
+einops = "*"
+transformers_stream_generator = "==0.0.4"
+qwen-vl-utils = "*"
+diffusers = "*"
+timm = "*"
+omegaconf = "*"
+numpydantic = "==1.6.9"
+albumentations = "==1.4.18"
+decord = "==0.6.0"
+pyarrow = ">=15.0.0"
+fastparquet = "==2024.11.0"
+av = ">=14.2.0"
+websocket-client = "==1.8.0"
+tensorboard = "*"
+wandb = "*"
+rich = "*"
+pyyaml = "*"
+filelock = "*"
+h5py = "==3.16.0"
+numpy = "==1.26.4"
+scipy = ">=1.15.3, <2"
+scikit-learn = "*"
+pillow = "*"
+matplotlib = "*"
+warp-lang = "==1.3.0"
+
+# sim runtime (svlr needs these directly now)
+sapien = "==3.0.0b1"
+mplib = "==0.2.1"
+gymnasium = "==0.29.1"
+trimesh = "==4.4.3"
+open3d = "==0.18.0"
+transforms3d = "==0.4.2"
+openai = ">=2.43.0, <3"
+
+# dev tooling (optional)
+black = "==25.9.0"
+flake8 = "==7.3.0"
+isort = "==5.13.0"
+pre-commit = "*"
+huggingface-hub = ">=0.25.0"
+gradio-client = ">=2.5.0, <3"
+
+[feature.svlr.tasks]
+eval = "bash script/run_eval_svlr.sh"
+setup = { depends-on = ["patch-libs", "download-assets", "download-data"] }
 # ================= ENVIRONMENTS =================
 # Each = default feature (python) + its own feature. Independent solves.
 [environments]
 default = { features = ["main"] }
 mem0 = { features = ["mem0"] }
+svlr = { features = ["svlr"] }
