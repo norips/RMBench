@@ -118,12 +118,12 @@ _ARM_BASE = {"left": 0, "right": 8}
 CONTROLLED_ARM = "right"            # which arm SVLR's single EE target drives
 FIXED_QUAT_WXYZ = (0.7035625528174423, -6.977925221139638e-06, -3.883136134669406e-06, 0.7106333331678397)
 QUAT_ORDER = "wxyz"                 # quat order in each *_endpose entry + take_action; SAPIEN=wxyz
-CAMERA_KEY = "head_camera"
+CAMERA_KEY = "right_camera"
 PLACEHOLDER_W, PLACEHOLDER_H = 640, 480
 
 DEFAULT_ENDPOSE = np.array(
-    [-0.20, -0.30, 0.90, 0.0, 1.0, 0.0, 0.0, 0.04,
-     0.20, -0.30, 0.90, 0.0, 1.0, 0.0, 0.0, 0.04], dtype=np.float64,
+    [-2.44753662e-06, -2.09625375e-01,  1.23524601e+00,  5.31254846e-01, -4.66658013e-01,  4.66638342e-01,  5.31269465e-01, 1.00000000e+00,
+     -2.44753662e-06, -2.09625375e-01,  1.23524601e+00,  5.31254846e-01, -4.66658013e-01,  4.66638342e-01,  5.31269465e-01, 1.00000000e+00], dtype=np.float64,
 )
 
 # --- Completion gating: end_action only after the EE POSITION reaches its target ---
@@ -140,7 +140,7 @@ MAX_SUBSTEPS_PER_ACTION = 60  # hard cap on take_action calls per SVLR command (
 # SVLR is invoked (the sim analogue of RealRobotBackend._move_to_initial_position).
 # Controlled-arm target: xyz(3) + quat(4, in QUAT_ORDER) + gripper(1).  ADAPT.
 HOME_ON_RESET = True
-HOME_CONTROLLED = np.array([0.20, -0.30, 0.90, 0.7035625528174423, -6.977925221139638e-06, -3.883136134669406e-06, 0.7106333331678397, 1.0], dtype=np.float64)
+HOME_CONTROLLED = np.array([0, -0.2,  1.25,  0.5, -0.5, 0.5, 0.5, 1.0], dtype=np.float64)
 
 
 def map_gripper(svlr_gripper: float) -> float:
@@ -290,7 +290,7 @@ def build_take_action(svlr_action: dict, cmd: np.ndarray, arm: str = CONTROLLED_
     out = cmd.copy()
     pos = svlr_action.get("pos_end_effector") or [svlr_action["ee.x"], svlr_action["ee.y"], svlr_action["ee.z"]]
     out[base + 0:base + 3] = [float(pos[0]), float(pos[1]), float(pos[2])]
-    out[base + 3:base + 7] = FIXED_QUAT_WXYZ
+    out[base + 3:base + 7] = [float(pos[3]), float(pos[4]), float(pos[5]), float(pos[6])] if len(pos) >= 7 else np.array(FIXED_QUAT_WXYZ, dtype=np.float64)
     if "gripper" in svlr_action or "ee.gripper_pos" in svlr_action:
         raw = svlr_action.get("gripper", svlr_action.get("ee.gripper_pos"))
         out[base + 7] = map_gripper(float(raw))  # SVLR units -> RoboTwin gripper units
@@ -551,27 +551,38 @@ class SimServer:
 
     # -- one eval() == one step --
     def step(self, env: Any, observation: Any) -> None:
-        if self._cmd is None:
-            # First step of the episode: home the arm BEFORE engaging SVLR, then
-            # publish the homed frame and hand the instruction to the driver.
-            self._home_and_engage(env, observation)
-        else:
-            measured = _endpose_from_obs(observation)
-            pose = pose_for_svlr(measured if measured is not None else self._cmd, self.controlled_arm)
-            self.bridge.publish(pose, extract_camera_payload(observation), sim_list_entities(env))
-            self.bridge.set_end_action(True)
-
         cam = env.get_obs()["observation"][CAMERA_KEY]
         rgb = np.asarray(cam["rgb"])
         img = Image.fromarray(rgb)
         img.save(f"output_step{env.take_action_cnt}.png")
-        
-        
         cam = env.get_obs()["observation"]["right_camera"]
         rgb = np.asarray(cam["rgb"])
         img = Image.fromarray(rgb)
         img.save(f"output_right_step{env.take_action_cnt}.png")
+        print(f"[sim-server] save output_step{env.take_action_cnt}.png")
         
+        print("[sim-server] end pose:", _endpose_from_obs(observation))
+        
+        
+        
+        if self._cmd is None:
+            # First step of the episode: home the arm BEFORE engaging SVLR, then
+            # publish the homed frame and hand the instruction to the driver.
+            self._home_and_engage(env, observation)
+            cam = env.get_obs()["observation"][CAMERA_KEY]
+            rgb = np.asarray(cam["rgb"])
+            img = Image.fromarray(rgb)
+            img.save(f"output_step_home{env.take_action_cnt}.png")
+            cam = env.get_obs()["observation"]["right_camera"]
+            rgb = np.asarray(cam["rgb"])
+            img = Image.fromarray(rgb)
+            img.save(f"output_right_step_home{env.take_action_cnt}.png")
+            print(f"[sim-server] save output_step_home{env.take_action_cnt}.png")
+        else:
+            measured = _endpose_from_obs(observation)
+            pose = pose_for_svlr(measured if measured is not None else self._cmd, self.controlled_arm)
+            self.bridge.publish(pose, extract_camera_payload(observation), sim_list_entities(env))
+
         action = None
         while not self.bridge.stop_requested:
             action = self.bridge.pop_action(timeout=self.action_poll_s)
@@ -583,7 +594,9 @@ class SimServer:
             return
 
         self._cmd = build_take_action(action, self._cmd, self.controlled_arm)
-        self._execute_until_ee_reached(env)
+        run_for = self._execute_until_ee_reached(env)
+        print(f"[sim-server] take_action: {self._cmd}  (ran {run_for} substeps)")
+        self.bridge.set_end_action(True)
 
         if bool(getattr(env, "eval_success", False)):
             self.bridge.set_done(True)
@@ -634,14 +647,19 @@ class SimServer:
         prev = None
         hold = 0
 
-        for _ in range(self.max_substeps_per_action):
-            print(f"[sim-server] take_action: {self._cmd}")
+        for iter in range(self.max_substeps_per_action):
+            # print(f"[sim-server] take_action: {self._cmd}")
             env.take_action(self._cmd, action_type="ee")
+            
+            observation = env.get_obs()
+            measured = _endpose_from_obs(observation)
+            pose = pose_for_svlr(measured if measured is not None else self._cmd, self.controlled_arm)
+            self.bridge.publish(pose, extract_camera_payload(observation), sim_list_entities(env))
 
             meas = measured_ee_xyz(env.get_obs(), self.controlled_arm)
-            print("[sim-server] measured EE xyz:", meas, "target:", target)
+            # print("[sim-server] measured EE xyz:", meas, "target:", target)
             if meas is None:
-                return  # EE not observable -> cannot gate on it; complete now
+                return iter  # EE not observable -> cannot gate on it; complete now
 
             dist = float(np.linalg.norm(meas - target))
             moved = None if prev is None else float(np.linalg.norm(meas - prev))
@@ -653,14 +671,14 @@ class SimServer:
             if reached or settled:
                 hold += 1
                 if hold >= self.ee_hold_frames:
-                    return
+                    return iter
             else:
                 hold = 0
 
             if bool(getattr(env, "eval_success", False)):
-                return
+                return iter
             if step_lim is not None and getattr(env, "take_action_cnt", 0) >= step_lim:
-                return
+                return iter
 
 
 # ===========================================================================

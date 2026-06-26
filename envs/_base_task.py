@@ -66,7 +66,7 @@ class Base_Task(gym.Env):
         self.render_freq = kwags.get("render_freq", 10)
         self.data_type = kwags.get("data_type", None)
         self.save_data = kwags.get("save_data", False)
-        self.dual_arm = kwags.get("dual_arm", True)
+        self.dual_arm = kwags.get("dual_arm", False)
         self.eval_mode = kwags.get("eval_mode", False)
 
         self.need_topp = True  # TODO
