@@ -288,9 +288,10 @@ def _endpose_from_obs(obs: Any) -> Optional[np.ndarray]:
 def build_take_action(svlr_action: dict, cmd: np.ndarray, arm: str = CONTROLLED_ARM) -> np.ndarray:
     base = _ARM_BASE[arm]
     out = cmd.copy()
+    print("[sim-server] SVLR action:", svlr_action)
     pos = svlr_action.get("pos_end_effector") or [svlr_action["ee.x"], svlr_action["ee.y"], svlr_action["ee.z"]]
     out[base + 0:base + 3] = [float(pos[0]), float(pos[1]), float(pos[2])]
-    out[base + 3:base + 7] = [float(pos[3]), float(pos[4]), float(pos[5]), float(pos[6])] if len(pos) >= 7 else np.array(FIXED_QUAT_WXYZ, dtype=np.float64)
+    out[base + 3:base + 7] = FIXED_QUAT_WXYZ # [float(pos[3]), float(pos[4]), float(pos[5]), float(pos[6])] if len(pos) >= 7 else np.array(FIXED_QUAT_WXYZ, dtype=np.float64)
     if "gripper" in svlr_action or "ee.gripper_pos" in svlr_action:
         raw = svlr_action.get("gripper", svlr_action.get("ee.gripper_pos"))
         out[base + 7] = map_gripper(float(raw))  # SVLR units -> RoboTwin gripper units
