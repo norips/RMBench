@@ -2,11 +2,8 @@
 authors = ["Raphael Druon <raphdruon@gmail.com>"]
 channels = ["https://prefix.dev/conda-forge"]
 name = "RMBench"
-platforms = ["linux-64"]
+platforms = [{ platform = "linux-64", cuda = "12" }]
 version = "0.1.0"
-
-[system-requirements]
-cuda = "12.0"
 
 # ================= DEFAULT FEATURE: python only =================
 # Included in BOTH environments. Holds nothing that can pin torch/cuda.
