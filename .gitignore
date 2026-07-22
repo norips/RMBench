@@ -1,6 +1,5 @@
 models/
 !policy/Mem-0/source/models
-data/*
 !data/process_stuck.py
 __pycache__/
 **/checkpoints/
@@ -26,6 +25,7 @@ policy/weights/*
 /config.json
 
 /*.json*
-/*.txt# pixi environments
+/*.txt
+# pixi environments
 .pixi/*
 !.pixi/config.toml
