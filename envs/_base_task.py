@@ -23,6 +23,7 @@ from pathlib import Path
 import trimesh
 import imageio
 import glob
+import time
 
 
 from ._GLOBAL_CONFIGS import *
@@ -37,6 +38,26 @@ class Base_Task(gym.Env):
 
     def __init__(self):
         pass
+
+    def _configure_camera_shader(self):
+        shader_dir = os.environ.get("RMBENCH_CAMERA_SHADER_DIR", "").strip()
+        if not shader_dir:
+            return
+
+        sapien.render.set_camera_shader_dir(shader_dir)
+        if shader_dir.lower() == "rt":
+            samples = int(os.environ.get("RMBENCH_RT_SPP", "16"))
+            path_depth = int(os.environ.get("RMBENCH_RT_PATH_DEPTH", "8"))
+            denoiser = os.environ.get("RMBENCH_RT_DENOISER", "none")
+            sapien.render.set_ray_tracing_samples_per_pixel(samples)
+            sapien.render.set_ray_tracing_path_depth(path_depth)
+            sapien.render.set_ray_tracing_denoiser(denoiser)
+            print(
+                f"[render] camera shader=rt spp={samples} "
+                f"path_depth={path_depth} denoiser={denoiser}"
+            )
+        else:
+            print(f"[render] camera shader={shader_dir}")
 
     # =========================================================== Init Task Env ===========================================================
     def _init_task_env_(self, table_xy_bias=[0, 0], table_height_bias=0, **kwags):
@@ -63,7 +84,7 @@ class Base_Task(gym.Env):
         self.task_name = kwags.get("task_name")
         self.save_dir = kwags.get("save_path", "data")
         self.ep_num = kwags.get("now_ep_num", 0)
-        self.render_freq = kwags.get("render_freq", 10)
+        self.render_freq = kwags.get("render_freq", 60)
         self.data_type = kwags.get("data_type", None)
         self.save_data = kwags.get("save_data", False)
         self.dual_arm = kwags.get("dual_arm", False)
@@ -123,6 +144,13 @@ class Base_Task(gym.Env):
         self.create_table_and_wall(table_xy_bias=table_xy_bias, table_height=0.74)
         self.load_robot(**kwags)
         self.load_camera(**kwags)
+        if self.render_freq:
+            try:
+                self._update_render()
+                self.viewer.render()
+                print("[render] SAPIEN viewer opened/refreshed after robot+camera setup")
+            except Exception as exc:
+                print(f"[render] SAPIEN viewer initial render warning: {exc}")
         self.robot.move_to_homestate()
 
         render_freq = self.render_freq
@@ -217,10 +245,10 @@ class Base_Task(gym.Env):
         # give renderer to sapien sim
         self.engine.set_renderer(self.renderer)
 
-        sapien.render.set_camera_shader_dir("rt")
-        sapien.render.set_ray_tracing_samples_per_pixel(32)
-        sapien.render.set_ray_tracing_path_depth(8)
-        sapien.render.set_ray_tracing_denoiser("oidn")
+        # Keep the default raster renderer unless explicitly overridden. The
+        # camera wrapper handles both SAPIEN "Position" and the minimal-shader
+        # "PositionSegmentation" packed texture for RGB-D/world XYZ.
+        self._configure_camera_shader()
 
         # declare sapien scene
         scene_config = sapien.SceneConfig()
@@ -402,7 +430,7 @@ class Base_Task(gym.Env):
             link: sapien.physx.PhysxArticulationLinkComponent = link
             link.set_mass(1)
             
-        if self.is_dual_arm:
+        if self.is_dual_arm and self.robot.right_entity is not self.robot.left_entity:
             for link in self.robot.right_entity.get_links():
                 link: sapien.physx.PhysxArticulationLinkComponent = link
                 link.set_mass(1)
@@ -1448,6 +1476,68 @@ class Base_Task(gym.Env):
         else:
             raise ValueError(f'arm_tag must be either "left" or "right", not {arm_tag}')
 
+
+    def _single_physical_dual_slot(self):
+        robot = getattr(self, "robot", None)
+        checker = getattr(robot, "_is_single_physical_dual_slot", None)
+        return bool(callable(checker) and checker())
+
+    def _coerce_single_physical_dual_slot_action(self, action, action_type, left_arm_dim, right_arm_dim):
+        """Mirror one logical slot onto the other for one-robot dual-slot embodiments.
+
+        RMBench represents `embodiment: ["franka-panda"]` as a 16D left/right
+        layout even though there is only one SAPIEN articulation.  Executing a
+        left hold and right move (or vice versa) would command the same joints in
+        two different ways.  Pick the slot that actually changed, then mirror it
+        so env.take_action(..., "ee") has one coherent physical target.
+        """
+        if not self._single_physical_dual_slot() or not self.is_dual_arm:
+            return action
+
+        arr = np.asarray(action, dtype=np.float64).reshape(-1).copy()
+        if action_type == 'ee':
+            slot_dim = 8
+            expected = slot_dim * 2
+            if arr.size < expected:
+                return arr
+            current_left = np.asarray(self.robot.get_left_ee_pose() + [self.robot.get_left_gripper_val()], dtype=np.float64)
+            current_right = np.asarray(self.robot.get_right_ee_pose() + [self.robot.get_right_gripper_val()], dtype=np.float64)
+            left_goal = arr[:slot_dim]
+            right_goal = arr[slot_dim:slot_dim * 2]
+        else:
+            slot_dim = left_arm_dim + 1
+            expected = slot_dim + right_arm_dim + 1
+            if arr.size < expected:
+                return arr
+            current_left = np.asarray(self.robot.get_left_arm_jointState(), dtype=np.float64)
+            current_right = np.asarray(self.robot.get_right_arm_jointState(), dtype=np.float64)
+            left_goal = arr[:slot_dim]
+            right_goal = arr[slot_dim:slot_dim + right_arm_dim + 1]
+
+        left_delta = float(np.linalg.norm(left_goal - current_left[:left_goal.size]))
+        right_delta = float(np.linalg.norm(right_goal - current_right[:right_goal.size]))
+        slots_already_equal = np.allclose(left_goal, right_goal, atol=1e-7, rtol=1e-7)
+        if slots_already_equal:
+            return arr
+
+        # If one side is a hold and the other side moves, the moving side is the
+        # user's intended logical arm (e.g. --sim_arm right).  If both differ,
+        # choose the larger delta and make the conflict explicit in logs.
+        preferred = os.environ.get("RMBENCH_SINGLE_ARM_PREFERRED_SLOT", "").strip().lower()
+        if preferred not in {"left", "right"}:
+            preferred = "right" if right_delta >= left_delta else "left"
+        source_goal = right_goal if preferred == "right" else left_goal
+
+        if preferred == "right":
+            arr[:slot_dim] = source_goal
+        else:
+            arr[slot_dim:slot_dim + source_goal.size] = source_goal
+        print(
+            f"[single-franka] mirrored logical {preferred} slot to both slots "
+            f"for one physical Panda (left_delta={left_delta:.6f}, right_delta={right_delta:.6f})"
+        )
+        return arr
+
     # =========================================================== Control Robot ===========================================================
 
     def take_dense_action(self, control_seq, save_freq=-1):
@@ -1465,6 +1555,33 @@ class Base_Task(gym.Env):
         save_freq = self.save_freq if save_freq == -1 else save_freq
         if save_freq != None:
             self._take_picture()
+
+        if self._single_physical_dual_slot():
+            # A single Franka articulation cannot execute separate left/right
+            # streams. If both logical slots request the same physical motion,
+            # deduplicate it; if one slot is idle, execute the active one.
+            if left_arm is not None and right_arm is not None:
+                left_final = left_arm["position"][-1]
+                right_final = right_arm["position"][-1]
+                if not np.allclose(left_final, right_final, atol=1e-6, rtol=1e-6):
+                    print("[single-franka] conflicting logical arm trajectories; using right slot")
+                    left_arm = None
+                elif right_arm["position"].shape[0] >= left_arm["position"].shape[0]:
+                    left_arm = None
+                else:
+                    right_arm = None
+                print("[single-franka] deduplicated simultaneous logical arm trajectories")
+            if left_gripper is not None and right_gripper is not None:
+                left_final = left_gripper["result"][-1]
+                right_final = right_gripper["result"][-1]
+                if not np.allclose(left_final, right_final, atol=1e-6, rtol=1e-6):
+                    print("[single-franka] conflicting logical gripper trajectories; using right slot")
+                    left_gripper = None
+                elif right_gripper["num_step"] >= left_gripper["num_step"]:
+                    left_gripper = None
+                else:
+                    right_gripper = None
+                print("[single-franka] deduplicated simultaneous logical gripper trajectories")
 
         max_control_len = 0
 
@@ -1521,7 +1638,6 @@ class Base_Task(gym.Env):
             self._take_picture()
 
         return True  # TODO: maybe need try error
-
     def take_action(self, action, action_type:Literal['qpos', 'ee']='qpos'):  # action_type: qpos or ee
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return
@@ -1538,10 +1654,10 @@ class Base_Task(gym.Env):
         if self.render_freq:
             self.viewer.render()
 
-        actions = np.array([action])
         if not self.is_dual_arm:
             left_jointstate = self.robot.get_left_arm_jointState()
             left_arm_dim = len(left_jointstate) - 1 if action_type == 'qpos' else 7
+            right_arm_dim = 0
             current_jointstate = np.array(left_jointstate)
         else:
             left_jointstate = self.robot.get_left_arm_jointState()
@@ -1549,6 +1665,9 @@ class Base_Task(gym.Env):
             right_jointstate = self.robot.get_right_arm_jointState()
             right_arm_dim = len(right_jointstate) - 1 if action_type == 'qpos' else 7
             current_jointstate = np.array(left_jointstate + right_jointstate)
+
+        action = self._coerce_single_physical_dual_slot_action(action, action_type, left_arm_dim, right_arm_dim)
+        actions = np.array([action])
 
         left_arm_actions, left_gripper_actions, left_current_qpos, left_path = (
             [],
@@ -1625,7 +1744,9 @@ class Base_Task(gym.Env):
         
         elif action_type == 'ee':
 
+            svlr_plan_started = time.monotonic()
             left_result = self.robot.left_plan_path(left_arm_actions[0])
+            svlr_left_plan_seconds = time.monotonic() - svlr_plan_started
             if left_result["status"] != "Success":
                 left_n_step = 50
                 topp_left_flag = False
@@ -1643,6 +1764,12 @@ class Base_Task(gym.Env):
                 else:
                     right_n_step = right_result["position"].shape[0]
                     topp_right_flag = True
+
+            print(
+                "\n[SVLR dense-ee] "
+                f"left_plan_seconds={svlr_left_plan_seconds:.3f} "
+                f"left_status={left_result['status']} left_trajectory_steps={left_n_step}"
+            )
 
         # ========== Gripper ==========
 
@@ -1681,6 +1808,14 @@ class Base_Task(gym.Env):
             right_gripper = np.array(right_gripper)
 
         now_left_id, now_right_id = 0, 0
+        svlr_dense_render_step = 0
+        svlr_control_started = time.monotonic()
+        try:
+            svlr_dense_render_stride = max(
+                1, int(os.environ.get("SVLR_DENSE_VIEWER_RENDER_STRIDE", "25"))
+            )
+        except ValueError:
+            svlr_dense_render_stride = 25
 
         # ========== Control Loop ==========
         while now_left_id < left_n_step or (self.is_dual_arm and now_right_id < right_n_step):
@@ -1711,6 +1846,16 @@ class Base_Task(gym.Env):
 
             self.scene.step()
             self._update_render()
+            svlr_dense_render_step += 1
+
+            # Keep the viewer responsive without path-tracing/rasterizing every
+            # 250 Hz physics sample.  Scene state is still advanced and synced
+            # on every sample; only intermediate viewer presentation is paced.
+            if (
+                self.render_freq
+                and svlr_dense_render_step % svlr_dense_render_stride == 0
+            ):
+                self.viewer.render()
                 
             if self.check_success():
                 self.eval_success = True
@@ -1722,6 +1867,12 @@ class Base_Task(gym.Env):
         self._update_render()
         if self.render_freq:  # UI
             self.viewer.render()
+        print(
+            "[SVLR dense-ee] "
+            f"control_seconds={time.monotonic() - svlr_control_started:.3f} "
+            f"left_steps_executed={now_left_id} "
+            f"viewer_render_stride={svlr_dense_render_stride}"
+        )
 
 
     def save_camera_images(self, task_name, step_name, generate_num_id, save_dir="./camera_images"):

@@ -21,12 +21,52 @@ class Robot:
     def __init__(self, scene, need_topp=False, **kwargs):
         super().__init__()
         ta.setup_logging("CRITICAL")  # hide logging
+        self.communication_flag = False
+        self.left_conn = None
+        self.right_conn = None
+        self.left_planner = None
+        self.right_planner = None
+        self.left_mplib_planner = None
+        self.right_mplib_planner = None
         self._init_robot_(scene, need_topp, **kwargs)
+
+    @staticmethod
+    def _resolve_path(base_path, child_path):
+        if child_path is None:
+            return None
+        child_path = str(child_path)
+        if os.path.isabs(child_path):
+            return child_path
+        return os.path.normpath(os.path.join(base_path, child_path))
+
+    def _is_single_physical_dual_slot(self):
+        return bool(getattr(self, "single_physical_dual_slot", False))
+
+    def _physical_gripper_value(self):
+        try:
+            drive_target = float(self.left_gripper[0][0].get_drive_target()[0])
+            value = (drive_target - self.left_gripper_scale[0]) / (self.left_gripper_scale[1] - self.left_gripper_scale[0])
+            return float(np.clip(value, 0.0, 1.0))
+        except Exception:
+            return max(getattr(self, "left_gripper_val", 0.0), getattr(self, "right_gripper_val", 0.0))
+
+    def _sync_single_physical_slots(self, source_arm=None):
+        if not self._is_single_physical_dual_slot():
+            return
+        if source_arm == "right":
+            val = self.right_gripper_val
+        elif source_arm == "left":
+            val = self.left_gripper_val
+        else:
+            val = self._physical_gripper_value()
+        self.left_gripper_val = val
+        self.right_gripper_val = val
 
     def _init_robot_(self, scene, need_topp=False, **kwargs):
         # self.dual_arm = dual_arm_tag
         # self.plan_success = True
 
+        self.communication_flag = False
         self.left_js = None
         self.right_js = None
 
@@ -37,11 +77,9 @@ class Robot:
 
         self.need_topp = need_topp
 
-        self.left_urdf_path = os.path.join(left_robot_file, left_embodiment_args["urdf_path"])
-        self.left_srdf_path = left_embodiment_args.get("srdf_path", None)
-        self.left_curobo_yml_path = os.path.join(left_robot_file, "curobo.yml")
-        if self.left_srdf_path is not None:
-            self.left_srdf_path = os.path.join(left_robot_file, self.left_srdf_path)
+        self.left_urdf_path = self._resolve_path(left_robot_file, left_embodiment_args["urdf_path"])
+        self.left_srdf_path = self._resolve_path(left_robot_file, left_embodiment_args.get("srdf_path", None))
+        self.left_curobo_yml_path = self._resolve_path(left_robot_file, "curobo.yml")
         self.left_joint_stiffness = left_embodiment_args.get("joint_stiffness", 1000)
         self.left_joint_damping = left_embodiment_args.get("joint_damping", 200)
         self.left_gripper_stiffness = left_embodiment_args.get("gripper_stiffness", 1000)
@@ -64,12 +102,32 @@ class Robot:
         _entity_origion_pose = sapien.Pose(_entity_origion_pose[:3], _entity_origion_pose[-4:])
         self.left_entity_origion_pose = deepcopy(_entity_origion_pose)
 
+        self.right_urdf_path = self.left_urdf_path
+        self.right_srdf_path = self.left_srdf_path
+        self.right_curobo_yml_path = self.left_curobo_yml_path
+        self.right_joint_stiffness = left_embodiment_args.get("joint_stiffness", 1000)
+        self.right_joint_damping = left_embodiment_args.get("joint_damping", 200)
+        self.right_gripper_stiffness = left_embodiment_args.get("gripper_stiffness", 1000)
+        self.right_gripper_damping = left_embodiment_args.get("gripper_damping", 200)
+        self.right_planner_type = left_embodiment_args.get("planner", "mplib_RRT")
+        self.right_move_group = left_embodiment_args["move_group"][-1]
+        self.right_ee_name = left_embodiment_args["ee_joints"][-1]
+        self.right_arm_joints_name = left_embodiment_args["arm_joints_name"][-1]
+        self.right_gripper_name = left_embodiment_args["gripper_name"][-1]
+        self.right_gripper_bias = left_embodiment_args["gripper_bias"]
+        self.right_gripper_scale = left_embodiment_args["gripper_scale"]
+        self.right_homestate = left_embodiment_args.get("homestate", [self.left_homestate])[-1]
+        self.right_fix_gripper_name = left_embodiment_args.get("fix_gripper_name", [])
+        self.right_delta_matrix = np.array(left_embodiment_args.get("delta_matrix", [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        self.right_inv_delta_matrix = np.linalg.inv(self.right_delta_matrix)
+        self.right_global_trans_matrix = np.array(
+            left_embodiment_args.get("global_trans_matrix", [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        self.right_entity_origion_pose = deepcopy(self.left_entity_origion_pose)
+
         if kwargs['dual_arm']:
-            self.right_urdf_path = os.path.join(right_robot_file, right_embodiment_args["urdf_path"])
-            self.right_srdf_path = right_embodiment_args.get("srdf_path", None)
-            if self.right_srdf_path is not None:
-                self.right_srdf_path = os.path.join(right_robot_file, self.right_srdf_path)
-            self.right_curobo_yml_path = os.path.join(right_robot_file, "curobo.yml")
+            self.right_urdf_path = self._resolve_path(right_robot_file, right_embodiment_args["urdf_path"])
+            self.right_srdf_path = self._resolve_path(right_robot_file, right_embodiment_args.get("srdf_path", None))
+            self.right_curobo_yml_path = self._resolve_path(right_robot_file, "curobo.yml")
             self.right_joint_stiffness = right_embodiment_args.get("joint_stiffness", 1000)
             self.right_joint_damping = right_embodiment_args.get("joint_damping", 200)
             self.right_gripper_stiffness = right_embodiment_args.get("gripper_stiffness", 1000)
@@ -95,6 +153,11 @@ class Robot:
         
         self.dual_arm_embodied = kwargs["dual_arm_embodied"]
         self.is_dual_arm = kwargs['dual_arm']
+        self.single_physical_dual_slot = bool(
+            self.is_dual_arm
+            and self.dual_arm_embodied
+            and left_embodiment_args.get("dual_arm") is False
+        )
 
         self.left_rotate_lim = left_embodiment_args.get("rotate_lim", [0, 0])
         self.right_rotate_lim = right_embodiment_args.get("rotate_lim", [0, 0])
@@ -118,6 +181,11 @@ class Robot:
                 self._entity = loader.load(self.left_urdf_path)
                 self.left_entity = self._entity
                 self.right_entity = self._entity
+                # One physical robot exposed through RMBench's logical left/right slots.
+                # Both slots must share the same root pose; setting two different root
+                # poses on the same articulation is contradictory and caused fragile
+                # Panda/Franka behavior.
+                self.right_entity_origion_pose = deepcopy(self.left_entity_origion_pose)
             else:
                 arms_dis = kwargs["embodiment_dis"]
                 self.left_entity_origion_pose.p += [-arms_dis / 2, 0, 0]
@@ -130,12 +198,13 @@ class Robot:
                 self.right_entity = right_loader.load(self.right_urdf_path)
 
             self.left_entity.set_root_pose(self.left_entity_origion_pose)
-            self.right_entity.set_root_pose(self.right_entity_origion_pose)
+            if self.right_entity is not self.left_entity:
+                self.right_entity.set_root_pose(self.right_entity_origion_pose)
 
     def reset(self, scene, need_topp=False, **kwargs):
         self._init_robot_(scene, need_topp, **kwargs)
 
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             if hasattr(self, "left_conn") and self.left_conn:
                 self.left_conn.send({"cmd": "reset"})
                 _ = self.left_conn.recv()
@@ -143,7 +212,8 @@ class Robot:
                 self.right_conn.send({"cmd": "reset"})
                 _ = self.right_conn.recv()
         else:
-            if not isinstance(self.left_planner, CuroboPlanner) or (self.is_dual_arm and not isinstance(self.right_planner, CuroboPlanner)):
+            if (not isinstance(getattr(self, "left_planner", None), CuroboPlanner)
+                    or (self.is_dual_arm and not isinstance(getattr(self, "right_planner", None), CuroboPlanner))):
                 self.set_planner(scene=scene)
 
         self.init_joints()
@@ -277,28 +347,58 @@ class Robot:
             print("gripper: ", [joint[0].get_name() for joint in self.left_gripper])
             print("ee: ", self.left_ee.get_name())
 
-    def set_planner(self, scene=None):
-        abs_left_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.left_curobo_yml_path)
+    def _abs_curobo_path(self, path):
+        path = os.path.normpath(str(path))
+        if os.path.isabs(path):
+            return path
+        return os.path.normpath(os.path.join(CONFIGS.ROOT_PATH, path))
+
+    def _planner_path_for_arm(self, path, arm_tag):
+        abs_path = self._abs_curobo_path(path)
         if self.is_dual_arm:
-            abs_right_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.right_curobo_yml_path)
+            candidate = abs_path.replace("curobo.yml", f"curobo_{arm_tag}.yml")
+            if os.path.exists(candidate):
+                return candidate
+        return abs_path
 
-        if self.dual_arm_embodied:
-            abs_left_curobo_yml_path = abs_left_curobo_yml_path.replace("curobo.yml", "curobo_left.yml")
-            abs_right_curobo_yml_path = abs_right_curobo_yml_path.replace("curobo.yml", "curobo_right.yml")
+    def set_planner(self, scene=None):
+        abs_left_curobo_yml_path = self._planner_path_for_arm(self.left_curobo_yml_path, "left")
+        abs_right_curobo_yml_path = (
+            self._planner_path_for_arm(self.right_curobo_yml_path, "right")
+            if self.is_dual_arm
+            else abs_left_curobo_yml_path
+        )
 
-        self.communication_flag = self.is_dual_arm and (abs_left_curobo_yml_path != abs_right_curobo_yml_path)
+        missing = [p for p in [abs_left_curobo_yml_path] + ([abs_right_curobo_yml_path] if self.is_dual_arm else []) if not os.path.exists(p)]
+        if missing:
+            raise FileNotFoundError(
+                "Missing Curobo config(s). Run `pixi run download-assets` or "
+                "`python script/update_embodiment_config_path.py --validate franka-panda`: "
+                + ", ".join(missing)
+            )
 
+        # Only true two-robot embodiments need separate planner worker processes.
+        # A single physical Franka exposed as logical left/right slots must stay
+        # in-process and deduplicate commands before writing to the one articulation.
+        self.communication_flag = bool(
+            self.is_dual_arm
+            and not self._is_single_physical_dual_slot()
+            and (abs_left_curobo_yml_path != abs_right_curobo_yml_path)
+        )
 
-        if not self.communication_flag:
+        if not getattr(self, "communication_flag", False):
             self.left_planner = CuroboPlanner(self.left_entity_origion_pose,
                                               self.left_arm_joints_name,
                                               [joint.get_name() for joint in self.left_entity.get_active_joints()],
                                               yml_path=abs_left_curobo_yml_path)
             if self.is_dual_arm:
-                self.right_planner = CuroboPlanner(self.right_entity_origion_pose,
-                                                self.right_arm_joints_name,
-                                                [joint.get_name() for joint in self.right_entity.get_active_joints()],
-                                                yml_path=abs_right_curobo_yml_path)
+                if self._is_single_physical_dual_slot():
+                    self.right_planner = self.left_planner
+                else:
+                    self.right_planner = CuroboPlanner(self.right_entity_origion_pose,
+                                                    self.right_arm_joints_name,
+                                                    [joint.get_name() for joint in self.right_entity.get_active_joints()],
+                                                    yml_path=abs_right_curobo_yml_path)
         else:
             self.left_conn, left_child_conn = mp.Pipe()
             self.right_conn, right_child_conn = mp.Pipe()
@@ -337,20 +437,23 @@ class Robot:
                 scene,
             )
             if self.is_dual_arm:
-                self.right_mplib_planner = MplibPlanner(
-                    self.right_urdf_path,
-                    self.right_srdf_path,
-                    self.right_move_group,
-                    self.right_entity_origion_pose,
-                    self.right_entity,
-                    self.right_planner_type,
-                    scene,
-                )
-
+                if self._is_single_physical_dual_slot():
+                    self.right_mplib_planner = self.left_mplib_planner
+                else:
+                    self.right_mplib_planner = MplibPlanner(
+                        self.right_urdf_path,
+                        self.right_srdf_path,
+                        self.right_move_group,
+                        self.right_entity_origion_pose,
+                        self.right_entity,
+                        self.right_planner_type,
+                        scene,
+                    )
     def update_world_pcd(self, world_pcd):
         try:
             self.left_planner.update_point_cloud(world_pcd, resolution=0.02)
-            self.right_planner.update_point_cloud(world_pcd, resolution=0.02)
+            if self.right_planner is not self.left_planner:
+                self.right_planner.update_point_cloud(world_pcd, resolution=0.02)
         except:
             print("Update world pointcloud wrong!")
 
@@ -366,18 +469,19 @@ class Robot:
         return sapien.Pose(gripper_pose_pos, gripper_pose_quat)
 
     def left_plan_grippers(self, now_val, target_val):
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             self.left_conn.send({"cmd": "plan_grippers", "now_val": now_val, "target_val": target_val})
             return self.left_conn.recv()
         else:
             return self.left_planner.plan_grippers(now_val, target_val)
 
     def right_plan_grippers(self, now_val, target_val):
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             self.right_conn.send({"cmd": "plan_grippers", "now_val": now_val, "target_val": target_val})
             return self.right_conn.recv()
         else:
-            return self.right_planner.plan_grippers(now_val, target_val)
+            planner = self.right_planner if self.right_planner is not None else self.left_planner
+            return planner.plan_grippers(now_val, target_val)
 
     def left_plan_multi_path(
         self,
@@ -397,7 +501,7 @@ class Robot:
         for i in range(len(target_lst_copy)):
             target_lst_copy[i] = self._trans_from_gripper_to_endlink(target_lst_copy[i], arm_tag="left")
 
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             self.left_conn.send({
                 "cmd": "plan_batch",
                 "qpos": now_qpos,
@@ -432,7 +536,7 @@ class Robot:
         for i in range(len(target_lst_copy)):
             target_lst_copy[i] = self._trans_from_gripper_to_endlink(target_lst_copy[i], arm_tag="right")
 
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             self.right_conn.send({
                 "cmd": "plan_batch",
                 "qpos": now_qpos,
@@ -442,7 +546,8 @@ class Robot:
             })
             return self.right_conn.recv()
         else:
-            return self.right_planner.plan_batch(
+            planner = self.right_planner if self.right_planner is not None else self.left_planner
+            return planner.plan_batch(
                 now_qpos,
                 target_lst_copy,
                 constraint_pose=constraint_pose,
@@ -466,7 +571,7 @@ class Robot:
 
         trans_target_pose = self._trans_from_gripper_to_endlink(target_pose, arm_tag="left")
 
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             self.left_conn.send({
                 "cmd": "plan_path",
                 "qpos": now_qpos,
@@ -500,7 +605,7 @@ class Robot:
 
         trans_target_pose = self._trans_from_gripper_to_endlink(target_pose, arm_tag="right")
 
-        if self.communication_flag:
+        if getattr(self, "communication_flag", False):
             self.right_conn.send({
                 "cmd": "plan_path",
                 "qpos": now_qpos,
@@ -510,7 +615,8 @@ class Robot:
             })
             return self.right_conn.recv()
         else:
-            return self.right_planner.plan_path(
+            planner = self.right_planner if self.right_planner is not None else self.left_planner
+            return planner.plan_path(
                 now_qpos,
                 trans_target_pose,
                 constraint_pose=constraint_pose,
@@ -554,31 +660,35 @@ class Robot:
         if None in self.left_gripper:
             print("No gripper")
             return 0
+        if self._is_single_physical_dual_slot():
+            self._sync_single_physical_slots()
         return self.left_gripper_val
 
     def get_right_gripper_val(self):
         if None in self.right_gripper:
             print("No gripper")
             return 0
+        if self._is_single_physical_dual_slot():
+            self._sync_single_physical_slots()
         return self.right_gripper_val
 
     def is_left_gripper_open(self):
-        return self.left_gripper_val > 0.8
+        return self.get_left_gripper_val() > 0.8
 
     def is_right_gripper_open(self):
-        return self.right_gripper_val > 0.8
+        return self.get_right_gripper_val() > 0.8
 
     def is_left_gripper_open_half(self):
-        return self.left_gripper_val > 0.45
+        return self.get_left_gripper_val() > 0.45
 
     def is_right_gripper_open_half(self):
-        return self.right_gripper_val > 0.45
+        return self.get_right_gripper_val() > 0.45
 
     def is_left_gripper_close(self):
-        return self.left_gripper_val < 0.2
+        return self.get_left_gripper_val() < 0.2
 
     def is_right_gripper_close(self):
-        return self.right_gripper_val < 0.2
+        return self.get_right_gripper_val() < 0.2
 
     # get move group joint pose
     def get_left_ee_pose(self):
@@ -635,7 +745,7 @@ class Robot:
 
     def set_arm_joints(self, target_position, target_velocity, arm_tag):
         self._entity_qf(self.left_entity)
-        if self.is_dual_arm:
+        if self.is_dual_arm and self.right_entity is not self.left_entity:
             self._entity_qf(self.right_entity)
 
         joint_lst = self.left_arm_joints if arm_tag == "left" else self.right_arm_joints
@@ -653,26 +763,33 @@ class Robot:
         else:
             normal_left_gripper_val = (self.left_gripper[0][0].get_drive_target()[0] - self.left_gripper_scale[0]) / (
                 self.left_gripper_scale[1] - self.left_gripper_scale[0])
-            normal_right_gripper_val = (self.right_gripper[0][0].get_drive_target()[0] - self.right_gripper_scale[0]) / (
-                self.right_gripper_scale[1] - self.right_gripper_scale[0])
+            if self._is_single_physical_dual_slot():
+                normal_right_gripper_val = normal_left_gripper_val
+            else:
+                normal_right_gripper_val = (self.right_gripper[0][0].get_drive_target()[0] - self.right_gripper_scale[0]) / (
+                    self.right_gripper_scale[1] - self.right_gripper_scale[0])
             normal_left_gripper_val = np.clip(normal_left_gripper_val, 0, 1)
             normal_right_gripper_val = np.clip(normal_right_gripper_val, 0, 1)
             return [normal_left_gripper_val, normal_right_gripper_val]
 
     def set_gripper(self, gripper_val, arm_tag, gripper_eps=0.1):  # gripper_val in [0,1]
         self._entity_qf(self.left_entity)
-        if self.is_dual_arm:
+        if self.is_dual_arm and self.right_entity is not self.left_entity:
             self._entity_qf(self.right_entity)
         gripper_val = np.clip(gripper_val, 0, 1)
 
         if arm_tag == "left":
             joints = self.left_gripper
             self.left_gripper_val = gripper_val
+            if self._is_single_physical_dual_slot():
+                self.right_gripper_val = gripper_val
             gripper_scale = self.left_gripper_scale
             real_gripper_val = self.get_normal_real_gripper_val()[0]
         else:
             joints = self.right_gripper
             self.right_gripper_val = gripper_val
+            if self._is_single_physical_dual_slot():
+                self.left_gripper_val = gripper_val
             gripper_scale = self.right_gripper_scale
             real_gripper_val = self.get_normal_real_gripper_val()[1]
 

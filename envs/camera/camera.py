@@ -1,3 +1,5 @@
+import contextlib
+
 import sapien.core as sapien
 import numpy as np
 import pdb
@@ -72,6 +74,79 @@ class Camera:
         # TODO
         self.static_camera_info_list = kwags["left_embodiment_config"]["static_camera_list"]
         self.static_camera_num = len(self.static_camera_info_list)
+        self.vlm_camera_shader_dir = os.environ.get("RMBENCH_VLM_CAMERA_SHADER_DIR", "").strip()
+        self.vlm_camera_map = {}
+
+    def _add_vlm_camera(self, scene, source_name, width, height, fovy, near, far, pose=None):
+        if not self.vlm_camera_shader_dir:
+            return None
+
+        import sapien.render as sapien_render
+
+        previous_shader = sapien_render.get_camera_shader_dir()
+        try:
+            sapien_render.set_camera_shader_dir(self.vlm_camera_shader_dir)
+            camera = scene.add_camera(
+                name=f"vlm_{source_name}",
+                width=width,
+                height=height,
+                fovy=fovy,
+                near=near,
+                far=far,
+            )
+            if pose is not None:
+                camera.entity.set_pose(pose)
+            self.vlm_camera_map[source_name] = camera
+            print(
+                f"[camera] created VLM camera clone for {source_name} "
+                f"with shader={self.vlm_camera_shader_dir}"
+            )
+            return camera
+        except Exception as exc:
+            print(f"[camera] failed to create VLM camera clone for {source_name}: {exc}")
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                sapien_render.set_camera_shader_dir(previous_shader)
+
+    def get_vlm_camera(self, camera_name):
+        return self.vlm_camera_map.get(camera_name)
+
+    @staticmethod
+    def _position_texture(camera):
+        try:
+            position = np.asarray(camera.get_picture("Position"), dtype=np.float32)
+            units = "m"
+            valid = position[..., 3] < 1.0 if position.ndim == 3 and position.shape[-1] >= 4 else None
+        except (IndexError, KeyError, RuntimeError):
+            try:
+                position = np.asarray(camera.get_picture("PositionSegmentation"), dtype=np.float32)
+                units = "mm"
+                valid = (
+                    np.linalg.norm(position[..., :3], axis=-1) > 0.0
+                    if position.ndim == 3 and position.shape[-1] >= 3
+                    else None
+                )
+            except (IndexError, KeyError, RuntimeError) as exc:
+                raise RuntimeError(
+                    'SAPIEN camera did not provide "Position" or '
+                    '"PositionSegmentation"; depth/world XYZ cannot be computed.'
+                ) from exc
+
+        if position.ndim != 3 or position.shape[-1] < 3:
+            raise RuntimeError(f"Unexpected SAPIEN position texture shape: {position.shape}")
+
+        xyz = position[..., :3].astype(np.float32, copy=False)
+        finite = np.isfinite(xyz).all(axis=-1)
+        if units == "mm":
+            xyz = xyz * 0.001
+        else:
+            finite_values = np.abs(xyz[np.isfinite(xyz)])
+            if finite_values.size and float(np.nanmedian(finite_values)) > 10.0:
+                xyz = xyz * 0.001
+
+        valid = finite if valid is None else (valid & finite)
+        return xyz, valid
 
     def load_camera(self, scene):
         """
@@ -117,7 +192,18 @@ class Camera:
                 near=near,
                 far=far,
             )
-            camera.entity.set_pose(sapien.Pose(mat44))
+            pose = sapien.Pose(mat44)
+            camera.entity.set_pose(pose)
+            self._add_vlm_camera(
+                scene,
+                camera_info["name"],
+                camera_config["w"],
+                camera_config["h"],
+                np.deg2rad(camera_config["fovy"]),
+                near,
+                far,
+                pose=pose,
+            )
 
             # ========================= sensor camera =========================
             # sensor_camera = StereoDepthSensor(
@@ -148,6 +234,24 @@ class Camera:
                 fovy=np.deg2rad(wrist_camera_config["fovy"]),
                 near=near,
                 far=far,
+            )
+            self._add_vlm_camera(
+                scene,
+                "left_camera",
+                wrist_camera_config["w"],
+                wrist_camera_config["h"],
+                np.deg2rad(wrist_camera_config["fovy"]),
+                near,
+                far,
+            )
+            self._add_vlm_camera(
+                scene,
+                "right_camera",
+                wrist_camera_config["w"],
+                wrist_camera_config["h"],
+                np.deg2rad(wrist_camera_config["fovy"]),
+                near,
+                far,
             )
 
         # ================================= sensor camera =================================
@@ -275,9 +379,19 @@ class Camera:
         if self.collect_wrist_camera:
             self.left_camera.take_picture()
             self.right_camera.take_picture()
+            left_vlm_camera = self.get_vlm_camera("left_camera")
+            right_vlm_camera = self.get_vlm_camera("right_camera")
+            if left_vlm_camera is not None:
+                left_vlm_camera.take_picture()
+            if right_vlm_camera is not None:
+                right_vlm_camera.take_picture()
 
         for camera in self.static_camera_list:
             camera.take_picture()
+        for camera_name in self.static_camera_name:
+            vlm_camera = self.get_vlm_camera(camera_name)
+            if vlm_camera is not None:
+                vlm_camera.take_picture()
 
         # ================================= sensor camera =================================
         # self.head_sensor.take_picture()
@@ -290,8 +404,14 @@ class Camera:
         """
         if self.collect_wrist_camera:
             self.left_camera.entity.set_pose(left_pose)
+            left_vlm_camera = self.get_vlm_camera("left_camera")
+            if left_vlm_camera is not None:
+                left_vlm_camera.entity.set_pose(left_pose)
             if right_pose is not None:
                 self.right_camera.entity.set_pose(right_pose)
+                right_vlm_camera = self.get_vlm_camera("right_camera")
+                if right_vlm_camera is not None:
+                    right_vlm_camera.entity.set_pose(right_pose)
 
     def get_config(self) -> dict:
         res = {}
@@ -413,7 +533,7 @@ class Camera:
     def get_depth(self) -> dict:
 
         def _get_depth(camera):
-            position = camera.get_picture("Position")
+            position, _valid = self._position_texture(camera)
             depth = -position[..., 2]
             depth_image = (depth * 1000.0).astype(np.float64)
             return depth_image

@@ -1,7 +1,11 @@
-cd assets
-python _download.py
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd ..
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-echo "Configuring Path ..."
-python ./script/update_embodiment_config_path.py
+cd "${REPO_ROOT}"
+python assets/_download.py "$@"
+
+echo "[assets] configuring embodiment Curobo paths ..."
+python script/update_embodiment_config_path.py --repo-root "${REPO_ROOT}" --validate franka-panda

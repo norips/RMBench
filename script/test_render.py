@@ -67,10 +67,11 @@ class Sapien_TEST(gym.Env):
         # give renderer to sapien sim
         self.engine.set_renderer(self.renderer)
 
-        sapien.render.set_camera_shader_dir("rt")
-        sapien.render.set_ray_tracing_samples_per_pixel(32)
-        sapien.render.set_ray_tracing_path_depth(8)
-        sapien.render.set_ray_tracing_denoiser("none")
+        # This object is only a renderer smoke test.  Do not change SAPIEN's
+        # process-global camera shader here: eval_svlr creates the real task in
+        # the same process, and a leaked RT shader makes every dense robot
+        # trajectory frame use path tracing.  The task environment selects its
+        # own shader explicitly when requested.
 
         # declare sapien scene
         scene_config = sapien.SceneConfig()

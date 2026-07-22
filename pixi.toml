@@ -20,7 +20,9 @@ pip = ">=24,<25"
 patch-libs = "bash script/patch_libs.sh"
 download-assets = "bash script/_download_assets.sh"
 download-data = "bash script/_download_data.sh"
-setup = { depends-on = ["patch-libs", "download-assets", "download-data"] }
+configure-embodiments = "python script/update_embodiment_config_path.py --validate franka-panda"
+validate-franka = "python script/validate_franka_setup.py"
+setup = { depends-on = ["patch-libs", "download-assets", "download-data", "configure-embodiments", "validate-franka"] }
 
 # ================= MAIN FEATURE: the torch 2.4.1 stack =================
 [feature.main.dependencies]
@@ -137,7 +139,7 @@ huggingface-hub = ">=0.25.0"
 [feature.mem0.tasks]
 eval = "bash script/run_eval_mem0.sh"
 download-assets-mem0 = "bash script/_download_mem0_assets.sh"
-setup = { depends-on = ["patch-libs", "download-assets", "download-data", "download-assets-mem0"] }
+setup = { depends-on = ["patch-libs", "download-assets", "download-data", "download-assets-mem0", "configure-embodiments", "validate-franka"] }
 
 # ================= MEM0 FEATURE: the torch 2.6.0 / cu124 stack =================
 [feature.svlr.dependencies]
@@ -219,7 +221,7 @@ gradio-client = ">=2.5.0, <3"
 
 [feature.svlr.tasks]
 eval = "bash script/run_eval_svlr.sh"
-setup = { depends-on = ["patch-libs", "download-assets", "download-data"] }
+setup = { depends-on = ["patch-libs", "download-assets", "download-data", "configure-embodiments", "validate-franka"] }
 # ================= ENVIRONMENTS =================
 # Each = default feature (python) + its own feature. Independent solves.
 [environments]

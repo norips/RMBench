@@ -1,10 +1,37 @@
-# Basic experiment configuration (keep unchanged)
+# Basic experiment configuration
 policy_name: SVLR
-task_name: null
-task_config: null
-ckpt_setting: null
+task_name: press_button
+task_config: demo_clean_franka
+ckpt_setting: svlr_debug
 seed: 0
 instruction_type: unseen
 global_task: null
+episode_num: 1
+# SVLR is the policy under test; do not run the hidden scripted expert
+# pre-check that forces render_freq=0 and delays the visible SAPIEN episode.
+skip_expert_check: true
 
-# Add Parameters You Need
+# SVLR bridge configuration
+# Start SVLR first with: bash run_svlr_rmbench.sh
+# Run RMBench with: bash policy/SVLR/run_demo.sh
+svlr_url: http://127.0.0.1:7860
+sim_host: 0.0.0.0
+sim_port: 65500
+sim_arm: right
+sim_drive: true
+sim_camera_key: right_camera
+sim_call_vlm: true
+sim_save_debug_images: true
+sim_vlm_camera_shader_dir: ""
+sim_finish_idle_s: 5.0
+sim_keep_alive_after_actions: false
+
+# Motion/completion tuning
+sim_home: false
+# auto mirrors commands only for one-robot RMBench embodiments exposed as left/right.
+sim_mirror_single_arm: auto
+sim_ee_pos_tol: 0.02
+sim_ee_settle_eps: 0.002
+sim_ee_hold_frames: 3
+sim_max_substeps: 60
+sim_min_substeps: 8
