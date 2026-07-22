@@ -218,7 +218,7 @@ gradio-client = ">=2.5.0, <3"
 
 [feature.svlr.tasks]
 eval = "bash script/run_eval_svlr.sh"
-setup = { depends-on = ["patch-libs", "download-assets", "download-data", "configure-embodiments", "validate-franka"] }
+setup = { depends-on = ["patch-libs", "download-assets", "configure-embodiments", "validate-franka"] }
 # ================= ENVIRONMENTS =================
 # Each = default feature (python) + its own feature. Independent solves.
 [environments]
