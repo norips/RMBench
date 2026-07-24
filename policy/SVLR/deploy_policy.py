@@ -144,7 +144,7 @@ FINISH_IDLE_S = 5.0          # auto-drive: after SVLR Gradio call returns and no
 # SVLR is invoked (the sim analogue of RealRobotBackend._move_to_initial_position).
 # Controlled-arm target: xyz(3) + quat(4, in QUAT_ORDER) + gripper(1).  ADAPT.
 HOME_ON_RESET = False
-HOME_CONTROLLED = np.array([0, -0.2,  1.25,  0.5, -0.5, 0.5, 0.5, 1.0], dtype=np.float64)
+HOME_CONTROLLED = np.array([0, -0.15,  1.4,  0.5, -0.5, 0.5, 0.5, 1.0], dtype=np.float64)
 
 
 def map_gripper(svlr_gripper: float) -> float:
