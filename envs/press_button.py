@@ -198,5 +198,11 @@ class press_button(Base_Task):
         self.set_button_unpressed(self.button2, target=min(0.0, self.get_current_button_value("button", self.button2)+0.002))
         self.set_button_unpressed(self.check_button, target=min(0.0, self.get_current_button_value("button", self.button1)+0.002))
 
-        return self.press_cnt_1 == self.card_id_1 and self.press_cnt_2 == self.card_id_2 and self.press_flag_check_button
-        
+        success = (
+            self.press_cnt_1 == self.card_id_1
+            and self.press_cnt_2 == self.card_id_2
+            and self.press_flag_check_button
+        )
+        if success:
+            self.max_reward = max(self.max_reward, 1.0)
+        return success
