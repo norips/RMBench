@@ -27,6 +27,7 @@ class observe_and_pickup(Base_Task):
         self.shelf.set_mass(0.1)
 
         self.get_obs_cnt = 0
+        self.wall = None
 
         self.object: list[Actor] = []
         self.object_modelnames = []
@@ -147,14 +148,27 @@ class observe_and_pickup(Base_Task):
         self.fail_flag = False
 
     def add_wall(self):
+        if self.wall is not None:
+            return self.wall
         self.wall = create_box(
             self.scene,
-            sapien.Pose(p=[0, 0.05, 0.95]),
-            half_size=[0.3, 0.005, 0.2],
+            sapien.Pose(p=[0, 0.05, 1.05]),
+            half_size=[0.4, 0.005, 0.3],
             color=(1, 0.9, 0.9),
             name="wall",
             is_static=True,
         )
+        return self.wall
+
+    def on_initial_observation_published(self):
+        """Hide the shelf after the bridge has copied the initial RGB-D frame."""
+
+        wall = self.add_wall()
+        # The synchronized initial snapshot replaces the observation-only phase
+        # that check_success() normally advances during dense-control samples.
+        self.get_obs_cnt = max(self.get_obs_cnt, 20)
+        self._update_render()
+        return wall
 
     def play_once(self):
         self.delay(delay_time=2, save_freq=-1, language_annotation="Wait for wall appear.") # 200 / 15

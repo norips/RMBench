@@ -100,11 +100,15 @@ class PoseResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     action_count: int
+    rejected_action_count: int
     end_action: bool
     pose: list[float] | None
     instruction: str | None
+    episode_id: int
+    accept_actions: bool
     done: bool
     success: bool
+    stop_requested: bool
     mode: str
 
 
@@ -139,6 +143,7 @@ EE_HOLD_FRAMES = 3
 MAX_SUBSTEPS_PER_ACTION = 60
 MIN_SUBSTEPS_PER_ACTION = 8
 FINISH_IDLE_S = 5.0          # auto-drive: after SVLR Gradio call returns and no actions arrive, end episode
+EPISODE_HANDOFF_TIMEOUT_S = 300.0
 
 # --- Fixed "home"/ready pose driven on the first step of each episode, BEFORE
 # SVLR is invoked (the sim analogue of RealRobotBackend._move_to_initial_position).
@@ -455,7 +460,7 @@ def extract_camera_payload(
 
     vlm_bgr = (
         _render_vlm_bgr_with_shader(env, used_camera_key, vlm_camera_shader_dir)
-        if env is not None
+        if env is not None and str(vlm_camera_shader_dir or "").strip()
         else None
     )
 
@@ -670,6 +675,7 @@ class SimBridge:
         self._entities: set[str] = set()
         self._action_count = 0
         self._rejected_action_count = 0
+        self._episode_id = 0
         self._accept_actions = False
         self._done = False
         self._success = False
@@ -680,7 +686,7 @@ class SimBridge:
             self._action_q.queue.clear()
 
     # producer (harness/main thread)
-    def begin_episode(self) -> None:
+    def begin_episode(self) -> int:
         with self._lock:
             # Drop any stale actions from the prior episode and keep the action
             # gate closed until SVLR has acknowledged /reset_episode.
@@ -689,8 +695,10 @@ class SimBridge:
             self._done = self._success = False
             self._action_count = 0
             self._rejected_action_count = 0
+            self._episode_id += 1
             self._accept_actions = False
             self.stop_requested = False
+            return self._episode_id
 
     def publish(self, pose, camera, entities) -> None:
         with self._lock:
@@ -700,10 +708,13 @@ class SimBridge:
         with self._lock:
             self._end_action = v
 
-    def open_action_window(self) -> None:
+    def open_action_window(self, episode_id: int | None = None) -> bool:
         with self._lock:
+            if episode_id is not None and int(episode_id) != self._episode_id:
+                return False
             self._accept_actions = True
             self._end_action = True
+            return True
 
     def set_instruction(self, s: str) -> None:
         with self._lock:
@@ -716,6 +727,17 @@ class SimBridge:
             self._clear_action_queue_locked()
             self._done, self._success = True, success
 
+    def request_stop(self) -> None:
+        with self._lock:
+            self.stop_requested = True
+            self._accept_actions = False
+            self._end_action = False
+            self._clear_action_queue_locked()
+
+    def episode_id(self) -> int:
+        with self._lock:
+            return int(self._episode_id)
+
     def pop_action(self, timeout: float) -> Optional[dict]:
         try:
             return self._action_q.get(timeout=timeout)
@@ -725,7 +747,25 @@ class SimBridge:
     # consumer (uvicorn thread)
     def send_action(self, payload: dict) -> bool:
         with self._lock:
-            if not self._accept_actions or self._done:
+            payload = dict(payload)
+            payload_episode_id = payload.pop("episode_id", None)
+            try:
+                stale_episode = (
+                    payload_episode_id is not None
+                    and int(payload_episode_id) != self._episode_id
+                )
+            except (TypeError, ValueError):
+                stale_episode = True
+            if stale_episode:
+                self._rejected_action_count += 1
+                print(
+                    "[sim-server] ignoring stale SVLR action "
+                    f"for episode_id={payload_episode_id}; "
+                    f"current_episode_id={self._episode_id} "
+                    f"(rejected={self._rejected_action_count})"
+                )
+                return False
+            if self.stop_requested or not self._accept_actions or self._done:
                 self._rejected_action_count += 1
                 print(
                     "[sim-server] ignoring SVLR action outside active episode "
@@ -765,9 +805,11 @@ class SimBridge:
         with self._lock:
             return {"action_count": self._action_count, "end_action": self._end_action,
                     "pose": list(self._pose), "instruction": self._instruction,
+                    "episode_id": self._episode_id,
                     "done": self._done, "success": self._success,
                     "accept_actions": self._accept_actions,
-                    "rejected_action_count": self._rejected_action_count}
+                    "rejected_action_count": self._rejected_action_count,
+                    "stop_requested": self.stop_requested}
 
 
 # ===========================================================================
@@ -803,8 +845,7 @@ def create_app(bridge: SimBridge) -> FastAPI:
 
     @app.post("/send_action", response_model=OkResponse)
     async def send_action(payload: ActionPayload):
-        bridge.send_action(payload.model_dump())
-        return {"ok": True}
+        return {"ok": bridge.send_action(payload.model_dump())}
 
     @app.post("/reset_end_action", response_model=OkResponse)
     async def reset_end_action():
@@ -817,7 +858,7 @@ def create_app(bridge: SimBridge) -> FastAPI:
 
     @app.post("/stop", response_model=OkResponse)
     async def stop():
-        bridge.stop_requested = True   # ends current episode; cleared on next reset
+        bridge.request_stop()
         return {"ok": True, "message": "stopping current episode"}
 
     return app
@@ -838,6 +879,7 @@ class SimServer:
                  max_substeps_per_action=MAX_SUBSTEPS_PER_ACTION,
                  min_substeps_per_action=MIN_SUBSTEPS_PER_ACTION,
                  finish_idle_s=FINISH_IDLE_S,
+                 episode_handoff_timeout_s=EPISODE_HANDOFF_TIMEOUT_S,
                  home_on_reset=HOME_ON_RESET, home_controlled=None,
                  mirror_single_arm=False,
                  keep_alive_after_actions=False,
@@ -856,6 +898,7 @@ class SimServer:
         self.max_substeps_per_action = int(max_substeps_per_action)
         self.min_substeps_per_action = int(min_substeps_per_action)
         self.finish_idle_s = float(finish_idle_s)
+        self.episode_handoff_timeout_s = float(episode_handoff_timeout_s)
         self.mirror_single_arm = bool(mirror_single_arm)
         self.keep_alive_after_actions = bool(keep_alive_after_actions)
         self.vlm_camera_shader_dir = str(vlm_camera_shader_dir or "").strip()
@@ -864,7 +907,11 @@ class SimServer:
             os.makedirs(self.debug_dir, exist_ok=True)
         if self.finish_idle_s < 0.0:
             raise ValueError("finish_idle_s must be >= 0")
+        if self.episode_handoff_timeout_s <= 0.0:
+            raise ValueError("episode_handoff_timeout_s must be > 0")
         self._driver_state_lock = threading.Lock()
+        self._driver_finished_event = threading.Event()
+        self._driver_episode_id = 0
         self._driver_started = False
         self._driver_finished = False
         self._driver_failed = False
@@ -892,7 +939,7 @@ class SimServer:
         self._cmd: Optional[np.ndarray] = None
         self._uv: Optional[uvicorn.Server] = None
         self._uv_thread: Optional[threading.Thread] = None
-        self._episode_q: "queue.Queue[str]" = queue.Queue()
+        self._episode_q: "queue.Queue[tuple[int, str]]" = queue.Queue()
         self._driver_thread: Optional[threading.Thread] = None
         self._shutdown = False
 
@@ -916,20 +963,77 @@ class SimServer:
             self._driver_thread = threading.Thread(target=self._drive_loop, daemon=True)
             self._driver_thread.start()
 
-    def _mark_driver_started(self) -> None:
+    def _mark_driver_started(self, episode_id: int) -> None:
         with self._driver_state_lock:
+            self._driver_episode_id = int(episode_id)
             self._driver_started = True
             self._driver_finished = False
             self._driver_failed = False
+            self._driver_finished_event.clear()
 
-    def _mark_driver_finished(self, failed: bool = False) -> None:
+    def _mark_driver_finished(
+        self,
+        episode_id: int,
+        failed: bool = False,
+    ) -> None:
         with self._driver_state_lock:
+            if int(episode_id) != self._driver_episode_id:
+                print(
+                    "[driver] ignoring stale completion for "
+                    f"episode_id={episode_id}; "
+                    f"current_episode_id={self._driver_episode_id}"
+                )
+                return
             self._driver_finished = True
             self._driver_failed = bool(failed)
+            self._driver_finished_event.set()
 
-    def _driver_done(self) -> tuple[bool, bool]:
+    def _driver_done(self, episode_id: int | None = None) -> tuple[bool, bool]:
         with self._driver_state_lock:
+            if (
+                episode_id is not None
+                and int(episode_id) != self._driver_episode_id
+            ):
+                return False, False
             return bool(self._driver_finished), bool(self._driver_failed)
+
+    def _wait_for_driver_handoff(self, timeout_s: float | None = None) -> None:
+        """Wait until the previous episode's blocking SVLR request has returned."""
+
+        with self._driver_state_lock:
+            if not self._driver_started or self._driver_finished:
+                return
+            episode_id = self._driver_episode_id
+            finished_event = self._driver_finished_event
+
+        # A new evaluator reset proves that the previous episode ended. A
+        # natural step-limit exit may not have published a terminal bridge
+        # verdict yet, so latch failure before waiting for SVLR to unwind.
+        if not self.bridge.status().get("done", False):
+            print(
+                "[sim-server] previous episode ended without a terminal bridge "
+                f"verdict; latching failure for episode_id={episode_id}"
+            )
+            self.bridge.set_done(False)
+
+        timeout = (
+            self.episode_handoff_timeout_s
+            if timeout_s is None
+            else float(timeout_s)
+        )
+        print(
+            "[sim-server] waiting for SVLR driver handoff before resetting "
+            f"episode_id={episode_id}"
+        )
+        if not finished_event.wait(timeout=max(0.0, timeout)):
+            raise RuntimeError(
+                "SVLR driver did not acknowledge terminal episode "
+                f"episode_id={episode_id} within {timeout:.1f}s"
+            )
+        print(
+            "[sim-server] SVLR driver handoff complete "
+            f"episode_id={episode_id}"
+        )
 
     def _reset_svlr_episode(
         self,
@@ -976,7 +1080,30 @@ class SimServer:
         detail = last_status if last_status is not None else repr(last_error)
         raise RuntimeError(f"SVLR episode reset was not confirmed: {detail}")
 
-    # -- SVLR driver: retries connect, fires one /process_vlm + /process_llm_command per episode --
+    def _run_svlr_episode(
+        self,
+        client: Any,
+        episode_id: int,
+        instruction: str,
+    ) -> None:
+        """Run one SVLR request against frames from the matching episode."""
+
+        print("[driver] resetting SVLR session")
+        self._reset_svlr_episode(client)
+        if not self.bridge.open_action_window(episode_id):
+            raise RuntimeError(
+                "stale SVLR driver request for "
+                f"episode_id={episode_id}; "
+                f"current_episode_id={self.bridge.episode_id()}"
+            )
+        print("[driver] SVLR action gate opened")
+        if self.call_vlm_before_llm:
+            print("[driver] running SVLR VLM perception")
+            client.predict(api_name="/process_vlm")
+        print(f"[driver] running SVLR LLM command: {instruction}")
+        client.predict(prompt=instruction, api_name="/process_llm_command")
+
+    # -- SVLR driver: retries connect, fires perception + language per episode --
     def _drive_loop(self) -> None:
         try:
             from gradio_client import Client
@@ -987,13 +1114,16 @@ class SimServer:
         while not self._shutdown:
             if client is None:
                 try:
-                    client = Client(self.svlr_url)
+                    client = Client(
+                        self.svlr_url,
+                        httpx_kwargs={"timeout": None},
+                    )
                     print(f"[driver] connected to SVLR at {self.svlr_url}")
                 except Exception:
                     time.sleep(1.0)
                     continue
             try:
-                instruction = self._episode_q.get(timeout=0.5)
+                episode_id, instruction = self._episode_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
@@ -1002,34 +1132,35 @@ class SimServer:
                 # Gradio process alive. Reset SVLR's per-episode memory before
                 # perception so WorldMemory/actions from the prior episode do
                 # not leak into the new task.
-                print("[driver] resetting SVLR session")
-                self._reset_svlr_episode(client)
-                self.bridge.open_action_window()
-                print("[driver] SVLR action gate opened")
-                # SVLR requires perception to run before language/action generation.
-                if self.call_vlm_before_llm:
-                    print("[driver] running SVLR VLM perception")
-                    client.predict(api_name="/process_vlm")
-                print(f"[driver] running SVLR LLM command: {instruction}")
-                client.predict(prompt=instruction, api_name="/process_llm_command")
+                self._run_svlr_episode(client, episode_id, instruction)
                 # The Gradio call returning means SVLR has generated its low-level
                 # queue. Execution may still be draining through /send_action, so
                 # do NOT stop immediately; step() will finish only after an idle
                 # grace period with no new actions.
-                self._mark_driver_finished(False)
             except Exception as e:
-                print(f"[driver] SVLR command failed: {e}")
-                self._mark_driver_finished(True)
+                print(
+                    "[driver] SVLR command failed: "
+                    f"{type(e).__name__}: {e!r}"
+                )
                 client = None  # force reconnect next round
+                driver_failed = True
+            else:
+                driver_failed = False
+            finally:
+                self._mark_driver_finished(episode_id, driver_failed)
 
     # -- per-episode reset --
-    def reset_episode(self) -> None:
+    def reset_episode(self, timeout_s: float | None = None) -> int:
+        self._wait_for_driver_handoff(timeout_s=timeout_s)
         self._cmd = None
-        self.bridge.begin_episode()
+        episode_id = self.bridge.begin_episode()
         with self._driver_state_lock:
+            self._driver_episode_id = episode_id
             self._driver_started = False
             self._driver_finished = False
             self._driver_failed = False
+            self._driver_finished_event.clear()
+        return episode_id
 
     def _save_debug_camera_images(self, obs: Any, suffix: str) -> None:
         if not self.save_debug_images:
@@ -1129,7 +1260,9 @@ class SimServer:
             if now - last_idle_render >= idle_render_dt:
                 self._pump_idle_viewer(env, fps=idle_render_fps)
                 last_idle_render = now
-            driver_finished, driver_failed = self._driver_done()
+            driver_finished, driver_failed = self._driver_done(
+                self.bridge.episode_id()
+            )
             if self.drive and driver_finished:
                 if driver_finished_since is None:
                     driver_finished_since = now
@@ -1222,6 +1355,19 @@ class SimServer:
         # ACK the low-level SVLR command only after the sim has advanced it.
         self.bridge.set_end_action(True)
 
+    @staticmethod
+    def _apply_initial_observation_transition(env: Any) -> bool:
+        """Run an optional environment transition after its snapshot is stored."""
+
+        hook = getattr(env, "on_initial_observation_published", None)
+        if hook is None:
+            return False
+        if not callable(hook):
+            raise TypeError("on_initial_observation_published must be callable")
+        hook()
+        print("[sim-server] applied initial-observation transition hook")
+        return True
+
     # -- first step: drive to the fixed home pose, then publish + engage SVLR --
     def _home_and_engage(self, env: Any, observation: Any) -> None:
         # Seed the command from the measured pose so the un-driven arm is held put.
@@ -1256,10 +1402,20 @@ class SimServer:
             ),
             sim_list_entities(env),
         )
+        self._save_debug_camera_images(pub_obs, "initial_observation")
         print(
-            "[sim-server] synchronized post-home perception frame published; "
+            "[sim-server] synchronized initial perception frame published; "
             f"take_action_cnt={getattr(env, 'take_action_cnt', None)}"
         )
+
+        # The bridge owns an encoded copy of the RGB-D payload at this point.
+        # Environments such as observe_and_pickup may now change the visible
+        # scene without altering the snapshot consumed by the first VLM call.
+        transitioned = self._apply_initial_observation_transition(env)
+        if transitioned and self.save_debug_images:
+            self._save_debug_camera_images(
+                env.get_obs(), "after_initial_observation_transition"
+            )
 
         # If a dense home action already satisfied the task (or an explicit debug
         # success gate did), finish immediately instead of launching SVLR and
@@ -1278,8 +1434,11 @@ class SimServer:
             instr = env.get_instruction()
             self.bridge.set_instruction(instr)
             if self.drive:
-                self._mark_driver_started()
-                self._episode_q.put(instr)   # driver fires /process_vlm + /process_llm_command now
+                episode_id = self.bridge.episode_id()
+                self._mark_driver_started(episode_id)
+                self._episode_q.put(
+                    (episode_id, instr)
+                )   # driver fires /process_vlm + /process_llm_command now
             else:
                 self.bridge.open_action_window()
 
@@ -1463,6 +1622,13 @@ def get_model(usr_args=None):
                                          MIN_SUBSTEPS_PER_ACTION, int),
             finish_idle_s=_cfg(usr_args, "sim_finish_idle_s", "SIM_FINISH_IDLE_S",
                                FINISH_IDLE_S, float),
+            episode_handoff_timeout_s=_cfg(
+                usr_args,
+                "sim_episode_handoff_timeout_s",
+                "SIM_EPISODE_HANDOFF_TIMEOUT_S",
+                EPISODE_HANDOFF_TIMEOUT_S,
+                float,
+            ),
             home_on_reset=_cfg(usr_args, "sim_home", "SIM_HOME", HOME_ON_RESET, _as_bool),
             home_controlled=home_controlled,
             mirror_single_arm=mirror_single_arm,

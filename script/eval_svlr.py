@@ -20,6 +20,10 @@ import argparse
 import ast
 import pdb
 
+from policy.SVLR.runtime_config import (
+    apply_initial_homestate_override as _apply_initial_homestate_override,
+)
+
 from generate_episode_instructions import *
 
 current_file_path = os.path.abspath(__file__)
@@ -193,6 +197,10 @@ def main(usr_args):
 
     args["left_embodiment_config"] = get_embodiment_config(args["left_robot_file"])
     args["right_embodiment_config"] = get_embodiment_config(args["right_robot_file"])
+    _apply_initial_homestate_override(
+        args,
+        usr_args.get("initial_homestate"),
+    )
     _validate_runtime_files(task_name, task_config, args)
     if len(embodiment_type) == 1 and args["left_embodiment_config"].get("dual_arm") is False:
         print(
