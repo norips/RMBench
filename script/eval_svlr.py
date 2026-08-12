@@ -92,23 +92,6 @@ def _validate_runtime_files(task_name, task_config, args):
         if args.get("dual_arm_embodied"):
             required.append(base / f"curobo_{arm}.yml")
 
-    if task_name == "swap_blocks":
-        required.extend([
-            Path("assets/objects/002_breadbasket/model_data1.json"),
-            Path("assets/objects/002_breadbasket/collision/base1.glb"),
-            Path("assets/objects/002_breadbasket/visual/base1.glb"),
-            Path("assets/objects/005_button/10124/mobility.urdf"),
-            Path("assets/objects/005_button/10124/model_data.json"),
-            Path("assets/objects/cube/textured.obj"),
-            Path("assets/objects/same.json"),
-            Path("assets/objects/objaverse/list.json"),
-        ])
-    if task_name == "swap_blocks" and task_config == "demo_clean_franka":
-        required.extend([
-            Path("data/data/swap_blocks/demo_clean/scene_info.json"),
-            Path("data/data/swap_blocks/demo_clean/seed.txt"),
-            Path("data/data/swap_blocks/demo_clean/language_annotation.json"),
-        ])
     missing = [str(path) for path in required if path is not None and not path.exists()]
     if missing:
         raise FileNotFoundError(

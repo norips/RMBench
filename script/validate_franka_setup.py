@@ -42,24 +42,6 @@ REQUIRED_FRANKA_FILES = [
     "franka_description/meshes/collision/finger.stl",
 ]
 
-REQUIRED_SWAP_BLOCK_OBJECT_FILES = [
-    "assets/objects/002_breadbasket/collision/base1.glb",
-    "assets/objects/002_breadbasket/visual/base1.glb",
-    "assets/objects/002_breadbasket/model_data1.json",
-    "assets/objects/005_button/10124/mobility.urdf",
-    "assets/objects/005_button/10124/model_data.json",
-    "assets/objects/cube/textured.obj",
-    "assets/objects/same.json",
-    "assets/objects/objaverse/list.json",
-]
-
-REQUIRED_SWAP_BLOCK_DATA_FILES = [
-    "data/data/swap_blocks/demo_clean/scene_info.json",
-    "data/data/swap_blocks/demo_clean/seed.txt",
-    "data/data/swap_blocks/demo_clean/language_annotation.json",
-]
-
-
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -106,17 +88,6 @@ def main() -> None:
         p = franka_dir / rel
         if not p.exists():
             missing.append(str(p))
-
-    for rel in REQUIRED_SWAP_BLOCK_OBJECT_FILES:
-        p = root / rel
-        if not p.exists():
-            missing.append(str(p))
-
-    if not args.skip_data:
-        for rel in REQUIRED_SWAP_BLOCK_DATA_FILES:
-            p = root / rel
-            if not p.exists():
-                missing.append(str(p))
 
     for yml_name in ("curobo.yml", "curobo_left.yml", "curobo_right.yml"):
         yml_path = franka_dir / yml_name
