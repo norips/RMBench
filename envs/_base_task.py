@@ -1638,7 +1638,12 @@ class Base_Task(gym.Env):
             self._take_picture()
 
         return True  # TODO: maybe need try error
-    def take_action(self, action, action_type:Literal['qpos', 'ee']='qpos'):  # action_type: qpos or ee
+    def take_action(
+        self,
+        action,
+        action_type: Literal['qpos', 'ee'] = 'qpos',
+        evaluate_success: bool = True,
+    ):  # action_type: qpos or ee
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return
 
@@ -1857,7 +1862,10 @@ class Base_Task(gym.Env):
             ):
                 self.viewer.render()
                 
-            if self.check_success():
+            # Infrastructure motions performed before perception must not
+            # advance task-specific lifecycle state. Normal policy actions keep
+            # the historical behaviour through evaluate_success=True.
+            if evaluate_success and self.check_success():
                 self.eval_success = True
                 self.get_obs() # update obs
                 if (self.eval_video_path is not None):

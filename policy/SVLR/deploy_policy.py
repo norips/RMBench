@@ -1479,7 +1479,10 @@ class SimServer:
                 other_arm = "left" if self.controlled_arm == "right" else "right"
                 other_base = _ARM_BASE[other_arm]
                 self._cmd[other_base:other_base + 8] = self.home_controlled
-            _run_for, pub_obs = self._execute_until_ee_reached(env)
+            _run_for, pub_obs = self._execute_until_ee_reached(
+                env,
+                evaluate_success=False,
+            )
         else:
             pub_obs = env.get_obs()
 
@@ -1549,7 +1552,10 @@ class SimServer:
         if self._observation_cmd is None:
             raise RuntimeError("initial observation pose is unavailable")
         self._cmd = self._observation_cmd.copy()
-        run_for, observation = self._execute_until_ee_reached(env)
+        run_for, observation = self._execute_until_ee_reached(
+            env,
+            evaluate_success=False,
+        )
         print(
             "[sim-server] restored initial observation pose "
             f"(ran {run_for} substeps)"
@@ -1561,6 +1567,7 @@ class SimServer:
         self,
         env: Any,
         has_position_target: bool = True,
+        evaluate_success: bool = True,
     ) -> tuple[int, Any]:
         """Execute one SVLR low-level command as one RMBench dense action.
 
@@ -1585,7 +1592,11 @@ class SimServer:
 
         # One RMBench dense action. This may internally execute many physics
         # steps, but the bridge should not re-send the same target again.
-        env.take_action(self._cmd, action_type="ee")
+        env.take_action(
+            self._cmd,
+            action_type="ee",
+            evaluate_success=evaluate_success,
+        )
 
         observation = env.get_obs()
         measured = _endpose_from_obs(observation)
@@ -1795,7 +1806,7 @@ class MockSimEnv:
     def get_instruction(self):
         return "pick up the block and place it on the plate"
 
-    def take_action(self, action, action_type="ee"):
+    def take_action(self, action, action_type="ee", evaluate_success=True):
         target = np.asarray(action, dtype=np.float64).reshape(-1)
         # Move each arm's EE xyz toward the target by at most EE_STEP_M; snap
         # orientation + gripper. Real RMBench take_action is dense and normally

@@ -126,6 +126,57 @@ class InitialObservationTransitionTests(unittest.TestCase):
         )
         server.bridge.open_action_window.assert_called_once_with(1)
 
+    def test_home_motion_does_not_advance_task_lifecycle_before_publish(self):
+        observation = {"observation": {}, "endpose": {}}
+        env = self._env(observation)
+        server = self._server()
+        server.home_on_reset = True
+
+        state = {"checks": 0, "wall": False}
+        published_wall_states = []
+
+        def dense_home(_action, action_type="ee", evaluate_success=True):
+            self.assertEqual(action_type, "ee")
+            for _ in range(25):
+                if evaluate_success:
+                    state["checks"] += 1
+                    if state["checks"] == 20:
+                        state["wall"] = True
+
+        def transition():
+            state["wall"] = True
+
+        env.take_action = Mock(side_effect=dense_home)
+        env.on_initial_observation_published.side_effect = transition
+        server.bridge.publish.side_effect = lambda *_args: published_wall_states.append(
+            state["wall"]
+        )
+
+        with (
+            patch(
+                "policy.SVLR.deploy_policy._endpose_from_obs",
+                return_value=np.asarray(DEFAULT_ENDPOSE),
+            ),
+            patch(
+                "policy.SVLR.deploy_policy.extract_camera_payload",
+                return_value={"view": "initial"},
+            ),
+            patch(
+                "policy.SVLR.deploy_policy.sim_list_entities",
+                return_value=set(),
+            ),
+        ):
+            server._home_and_engage(env, observation)
+
+        env.take_action.assert_called_once_with(
+            server._cmd,
+            action_type="ee",
+            evaluate_success=False,
+        )
+        self.assertEqual(state["checks"], 0)
+        self.assertEqual(published_wall_states, [False, False])
+        self.assertTrue(state["wall"])
+
     def test_restore_observation_pose_reuses_initial_view_command(self):
         server = self._server()
         initial = np.arange(16, dtype=np.float64)
@@ -139,7 +190,10 @@ class InitialObservationTransitionTests(unittest.TestCase):
 
         self.assertEqual(result, restored_observation)
         np.testing.assert_array_equal(server._cmd, initial)
-        server._execute_until_ee_reached.assert_called_once_with(sentinel.env)
+        server._execute_until_ee_reached.assert_called_once_with(
+            sentinel.env,
+            evaluate_success=False,
+        )
 
     def test_initial_view_remembers_command_instead_of_tracking_offset(self):
         observation = {"observation": {}, "endpose": {}}
