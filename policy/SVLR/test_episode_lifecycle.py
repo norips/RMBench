@@ -33,6 +33,8 @@ class SimBridgeEpisodeTests(unittest.TestCase):
         self.assertIn("accept_actions", serialized)
         self.assertIn("rejected_action_count", serialized)
         self.assertIn("stop_requested", serialized)
+        self.assertEqual(serialized["observation_request_id"], 0)
+        self.assertEqual(serialized["observation_ready_id"], 0)
 
     def test_stale_action_is_rejected_without_entering_queue(self):
         bridge = SimBridge()
@@ -58,6 +60,29 @@ class SimBridgeEpisodeTests(unittest.TestCase):
 
         self.assertTrue(bridge.send_action({"gripper": 1.0}))
         self.assertEqual(bridge.pop_action(timeout=0.01), {"gripper": 1.0})
+
+    def test_observation_pose_request_is_not_counted_as_task_action(self):
+        bridge = SimBridge()
+        episode_id = bridge.begin_episode()
+        self.assertTrue(bridge.open_action_window(episode_id))
+
+        requested = bridge.request_observation_pose(episode_id)
+
+        self.assertEqual(requested, {"ok": True, "request_id": 1})
+        self.assertEqual(bridge.action_count(), 0)
+        self.assertEqual(
+            bridge.pop_action(timeout=0.01),
+            {
+                "_bridge_command": "prepare_observation",
+                "episode_id": episode_id,
+                "request_id": 1,
+            },
+        )
+        bridge.finish_observation_pose(episode_id, 1)
+        status = bridge.status()
+        self.assertEqual(status["observation_request_id"], 1)
+        self.assertEqual(status["observation_ready_id"], 1)
+        self.assertIsNone(status["observation_error"])
 
     def test_stale_driver_cannot_open_action_window(self):
         bridge = SimBridge()

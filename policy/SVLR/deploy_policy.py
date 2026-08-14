@@ -109,6 +109,9 @@ class StatusResponse(BaseModel):
     done: bool
     success: bool
     stop_requested: bool
+    observation_request_id: int
+    observation_ready_id: int
+    observation_error: str | None
     mode: str
 
 
@@ -679,6 +682,9 @@ class SimBridge:
         self._accept_actions = False
         self._done = False
         self._success = False
+        self._observation_request_id = 0
+        self._observation_ready_id = 0
+        self._observation_error: str | None = None
         self.stop_requested = False
 
     def _clear_action_queue_locked(self) -> None:
@@ -695,6 +701,9 @@ class SimBridge:
             self._done = self._success = False
             self._action_count = 0
             self._rejected_action_count = 0
+            self._observation_request_id = 0
+            self._observation_ready_id = 0
+            self._observation_error = None
             self._episode_id += 1
             self._accept_actions = False
             self.stop_requested = False
@@ -777,6 +786,55 @@ class SimBridge:
             self._action_q.put(payload)
             return True
 
+    def request_observation_pose(self, episode_id: int | None = None) -> dict:
+        """Queue a camera-pose transition without recording a task action."""
+        with self._lock:
+            try:
+                stale_episode = (
+                    episode_id is not None
+                    and int(episode_id) != self._episode_id
+                )
+            except (TypeError, ValueError):
+                stale_episode = True
+            if (
+                stale_episode
+                or self.stop_requested
+                or not self._accept_actions
+                or self._done
+            ):
+                return {
+                    "ok": False,
+                    "error": "observation pose requested outside active episode",
+                }
+            self._observation_request_id += 1
+            request_id = self._observation_request_id
+            self._observation_error = None
+            self._action_q.put(
+                {
+                    "_bridge_command": "prepare_observation",
+                    "episode_id": self._episode_id,
+                    "request_id": request_id,
+                }
+            )
+            return {"ok": True, "request_id": request_id}
+
+    def finish_observation_pose(
+        self,
+        episode_id: int,
+        request_id: int,
+        error: str | None = None,
+    ) -> None:
+        with self._lock:
+            if int(episode_id) != self._episode_id:
+                return
+            if error:
+                self._observation_error = str(error)
+                return
+            self._observation_ready_id = max(
+                self._observation_ready_id, int(request_id)
+            )
+            self._observation_error = None
+
     def reset_end_action(self) -> None:
         with self._lock:
             self._end_action = False
@@ -809,6 +867,9 @@ class SimBridge:
                     "done": self._done, "success": self._success,
                     "accept_actions": self._accept_actions,
                     "rejected_action_count": self._rejected_action_count,
+                    "observation_request_id": self._observation_request_id,
+                    "observation_ready_id": self._observation_ready_id,
+                    "observation_error": self._observation_error,
                     "stop_requested": self.stop_requested}
 
 
@@ -851,6 +912,12 @@ def create_app(bridge: SimBridge) -> FastAPI:
     async def reset_end_action():
         bridge.reset_end_action()
         return {"ok": True}
+
+    @app.post("/prepare_observation")
+    async def prepare_observation(payload: ActionPayload):
+        return bridge.request_observation_pose(
+            payload.model_dump().get("episode_id")
+        )
 
     @app.post("/segment_entity")
     async def segment_entity(payload: SegmentEntityPayload):
@@ -937,6 +1004,7 @@ class SimServer:
         self.bridge = SimBridge()
         self.app = create_app(self.bridge)
         self._cmd: Optional[np.ndarray] = None
+        self._observation_cmd: Optional[np.ndarray] = None
         self._uv: Optional[uvicorn.Server] = None
         self._uv_thread: Optional[threading.Thread] = None
         self._episode_q: "queue.Queue[tuple[int, str]]" = queue.Queue()
@@ -1153,6 +1221,7 @@ class SimServer:
     def reset_episode(self, timeout_s: float | None = None) -> int:
         self._wait_for_driver_handoff(timeout_s=timeout_s)
         self._cmd = None
+        self._observation_cmd = None
         episode_id = self.bridge.begin_episode()
         with self._driver_state_lock:
             self._driver_episode_id = episode_id
@@ -1255,6 +1324,34 @@ class SimServer:
         while not self.bridge.stop_requested:
             action = self.bridge.pop_action(timeout=poll_timeout)
             if action is not None:
+                if action.get("_bridge_command") == "prepare_observation":
+                    request_episode_id = int(action.get("episode_id", -1))
+                    request_id = int(action.get("request_id", -1))
+                    try:
+                        restored_observation = self._restore_observation_pose(env)
+                        self._save_debug_camera_images(
+                            restored_observation,
+                            f"observation{request_id}",
+                        )
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: {exc}"
+                        print(
+                            "[sim-server] observation pose restore failed: "
+                            f"{error}"
+                        )
+                        self.bridge.finish_observation_pose(
+                            request_episode_id,
+                            request_id,
+                            error=error,
+                        )
+                    else:
+                        self.bridge.finish_observation_pose(
+                            request_episode_id,
+                            request_id,
+                        )
+                    action = None
+                    wait_started = time.monotonic()
+                    continue
                 break
             now = time.monotonic()
             if now - last_idle_render >= idle_render_dt:
@@ -1390,6 +1487,11 @@ class SimServer:
         # transition has completed. The driver is queued below, so VLM and
         # Grounded-SAM2 cannot race the home motion or read a cached pre-home cue.
         m = _endpose_from_obs(pub_obs)
+        # Replaying the command that produced the first frame is more stable
+        # than targeting its measured endpoint: the dense controller has a
+        # small repeatable tracking offset, so feeding that measurement back as
+        # the next target would shift the wrist camera on every observation.
+        self._observation_cmd = np.asarray(self._cmd, dtype=np.float64).copy()
         pose = pose_for_svlr(m if m is not None else self._cmd, self.controlled_arm)
         self.bridge.publish(
             pose,
@@ -1441,6 +1543,18 @@ class SimServer:
                 )   # driver fires /process_vlm + /process_llm_command now
             else:
                 self.bridge.open_action_window()
+
+    def _restore_observation_pose(self, env: Any) -> Any:
+        """Replay the command that produced the first episode viewpoint."""
+        if self._observation_cmd is None:
+            raise RuntimeError("initial observation pose is unavailable")
+        self._cmd = self._observation_cmd.copy()
+        run_for, observation = self._execute_until_ee_reached(env)
+        print(
+            "[sim-server] restored initial observation pose "
+            f"(ran {run_for} substeps)"
+        )
+        return observation
 
     # -- execute exactly one RMBench dense action per SVLR low-level command --
     def _execute_until_ee_reached(

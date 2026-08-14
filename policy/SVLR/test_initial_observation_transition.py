@@ -126,6 +126,54 @@ class InitialObservationTransitionTests(unittest.TestCase):
         )
         server.bridge.open_action_window.assert_called_once_with(1)
 
+    def test_restore_observation_pose_reuses_initial_view_command(self):
+        server = self._server()
+        initial = np.arange(16, dtype=np.float64)
+        server._observation_cmd = initial.copy()
+        restored_observation = {"frame": "restored"}
+        server._execute_until_ee_reached = Mock(
+            return_value=(1, restored_observation)
+        )
+
+        result = server._restore_observation_pose(sentinel.env)
+
+        self.assertEqual(result, restored_observation)
+        np.testing.assert_array_equal(server._cmd, initial)
+        server._execute_until_ee_reached.assert_called_once_with(sentinel.env)
+
+    def test_initial_view_remembers_command_instead_of_tracking_offset(self):
+        observation = {"observation": {}, "endpose": {}}
+        env = self._env(observation)
+        server = self._server()
+        server.home_on_reset = True
+        server.home_controlled = np.asarray(
+            [0.0, -0.15, 1.4, 0.5, -0.5, 0.5, 0.5, 1.0]
+        )
+        measured_before = np.arange(16, dtype=np.float64)
+        measured_after = measured_before + 0.125
+        server._execute_until_ee_reached = Mock(return_value=(1, observation))
+
+        with (
+            patch(
+                "policy.SVLR.deploy_policy._endpose_from_obs",
+                side_effect=[measured_before, measured_after],
+            ),
+            patch(
+                "policy.SVLR.deploy_policy.extract_camera_payload",
+                return_value={"view": "initial"},
+            ),
+            patch(
+                "policy.SVLR.deploy_policy.sim_list_entities",
+                return_value=set(),
+            ),
+        ):
+            server._home_and_engage(env, observation)
+
+        expected = measured_before.copy()
+        expected[8:16] = server.home_controlled
+        np.testing.assert_array_equal(server._observation_cmd, expected)
+        self.assertFalse(np.array_equal(server._observation_cmd, measured_after))
+
     def test_empty_vlm_shader_reuses_synchronized_rgbd_capture(self):
         observation = {
             "observation": {
