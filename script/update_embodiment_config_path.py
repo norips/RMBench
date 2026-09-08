@@ -21,8 +21,21 @@ YELLOW = "\033[0;33m"
 GREEN = "\033[0;32m"
 RESET = "\033[0m"
 
-DEFAULT_VALIDATE = ["franka-panda"]
+DEFAULT_VALIDATE = ["aloha-agilex", "franka-panda"]
 REQUIRED_BY_EMBODIMENT = {
+    "aloha-agilex": [
+        "config.yml",
+        "urdf/arx5_description_isaac.urdf",
+        "srdf/arx5_description_isaac.srdf",
+        "curobo_left_tmp.yml",
+        "curobo_right_tmp.yml",
+        "curobo_left.yml",
+        "curobo_right.yml",
+        "collision_aloha_left.yml",
+        "collision_aloha_right.yml",
+        "meshes/base_link.STL",
+        "meshes/d435.dae",
+    ],
     "franka-panda": [
         "config.yml",
         "panda.urdf",

@@ -2,7 +2,7 @@
 
 This folder exposes RMBench/RoboTwin as an HTTP robot server that SVLR can control without changing SVLR's core architecture.
 
-## Clean setup for the Franka/Panda target
+## Clean setup for the aloha-agilex target
 
 From a clean RMBench clone on `svlr-bridge-current`:
 
@@ -19,18 +19,24 @@ pixi run -e svlr validate-franka
 - RMBench object assets from `TianxingChen/RMBench` under `assets/objects/`.
 - RMBench `swap_blocks/demo_clean` evaluation data from `TianxingChen/RMBench` under `data/data/swap_blocks/demo_clean/`.
 
-Then it generates `curobo.yml`, `curobo_left.yml`, and `curobo_right.yml` from `*_tmp.yml` templates with absolute paths for the current checkout, and validates that the Franka URDF/SRDF/meshes/Curobo files and swap-block object/data files exist.
+Then it generates `curobo.yml`, `curobo_left.yml`, and `curobo_right.yml` from `*_tmp.yml` templates with absolute paths for the current checkout, and validates that the aloha-agilex and Franka URDF/SRDF/meshes/Curobo files and swap-block object/data files exist.
 
-## Panda/Franka layout
+## Embodiment layout
 
-`task_config/demo_clean_franka.yml` uses `embodiment: ["franka-panda"]`. This is one physical Franka/Panda articulation exposed through RMBench's logical left/right 16D action layout. It is **not** a default true dual-arm Panda installation.
+The SVLR default is `task_config/demo_clean_aloha.yml`, which uses `embodiment: ["aloha-agilex"]` — RMBench's default dual-arm robot, with two real arms behind the logical left/right 16D action layout.
 
 For this mode:
 
-- `--sim_arm right` is valid and is the default SVLR-controlled logical slot.
-- `--sim_camera_key right_camera` is valid; the right wrist camera aliases the same physical wrist camera when the embodiment is single-Panda.
+- `--sim_arm right` selects the physical right arm; the left arm holds its reset pose.
+- `--sim_camera_key right_camera` is the right wrist camera of that arm.
+- `--sim_mirror_single_arm auto` resolves to *off*: the two logical slots are two different articulations, so no mirroring is needed or wanted.
+- `HOME_CONTROLLED` in `deploy_policy.py` is the ready pose driven before the first perception call; override with `--sim_home_controlled` / `SIM_HOME_CONTROLLED` when a task needs a different one. Its quaternion is wxyz in the ee frame, which for aloha-agilex is the world rotation of `fr_link6`: `(0.5, -0.5, 0.5, 0.5)` points the fingers down, closes the jaws along world X and rolls the wrist so the picture is the same way up as the head camera's. Keep it equal to `init_pose` in SVLR's `actions/RMBENCH_ALOHA_action.json`.
+
+`task_config/demo_clean_franka.yml` (`embodiment: ["franka-panda"]`) remains available for the single-Panda setup. That one is *one* physical articulation exposed through both logical slots, so:
+
 - `--sim_mirror_single_arm auto` mirrors the controlled logical slot to both 16D slots before `env.take_action(..., "ee")`, avoiding one logical slot trying to hold while the other moves the same articulation.
 - RMBench keeps left/right gripper state aliases synchronized so success checks that look at the right gripper remain valid.
+- The pose constants in `deploy_policy.py` (`DEFAULT_ENDPOSE`, `HOME_CONTROLLED`) are now aloha values and would need to be switched back for a Franka run.
 
 ## Start SVLR
 
@@ -52,7 +58,7 @@ cd ~/RMBench
 RMBENCH_SWAP_DEBUG_SUCCESS=1 pixi run -e svlr python script/eval_svlr.py \
   --config policy/SVLR/deploy_policy.yml --overrides \
   --task_name swap_blocks \
-  --task_config demo_clean_franka \
+  --task_config demo_clean_aloha \
   --policy_name SVLR \
   --ckpt_setting svlr_swap_debug \
   --seed 0 \

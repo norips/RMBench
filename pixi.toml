@@ -17,7 +17,7 @@ pip = ">=24,<25"
 patch-libs = "bash script/patch_libs.sh"
 download-assets = "bash script/_download_assets.sh"
 download-data = "bash script/_download_data.sh"
-configure-embodiments = "python script/update_embodiment_config_path.py --validate franka-panda"
+configure-embodiments = "python script/update_embodiment_config_path.py --validate aloha-agilex franka-panda"
 validate-franka = "python script/validate_franka_setup.py"
 setup = { depends-on = ["patch-libs", "download-assets", "download-data", "configure-embodiments", "validate-franka"] }
 

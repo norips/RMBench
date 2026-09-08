@@ -88,9 +88,13 @@ def _validate_runtime_files(task_name, task_config, args):
         required.append(resolve(base, cfg.get("urdf_path")))
         if cfg.get("srdf_path") is not None:
             required.append(resolve(base, cfg.get("srdf_path")))
-        required.append(base / "curobo.yml")
+        # A dual-arm embodiment ships one curobo config per arm and no shared
+        # one; a single-arm embodiment is the other way round. Requiring both
+        # fails aloha-agilex on a curobo.yml that is not supposed to exist.
         if args.get("dual_arm_embodied"):
             required.append(base / f"curobo_{arm}.yml")
+        else:
+            required.append(base / "curobo.yml")
 
     missing = [str(path) for path in required if path is not None and not path.exists()]
     if missing:

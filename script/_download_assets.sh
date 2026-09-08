@@ -8,4 +8,4 @@ cd "${REPO_ROOT}"
 python assets/_download.py "$@"
 
 echo "[assets] configuring embodiment Curobo paths ..."
-python script/update_embodiment_config_path.py --repo-root "${REPO_ROOT}" --validate franka-panda
+python script/update_embodiment_config_path.py --repo-root "${REPO_ROOT}" --validate aloha-agilex franka-panda

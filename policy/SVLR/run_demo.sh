@@ -6,16 +6,16 @@ set -euo pipefail
 #   cd <svlr_repo> && bash run_svlr_rmbench.sh
 #
 # Default command mirrors the manual command used for the SVLR/RMBench demo:
-#   press_button + demo_clean_franka + global instruction "press the button"
+#   press_button + demo_clean_aloha + global instruction "press the button"
 #
 # Usage:
 #   bash policy/SVLR/run_demo.sh
-#   bash policy/SVLR/run_demo.sh press_button demo_clean_franka svlr_debug 0 "press the button"
+#   bash policy/SVLR/run_demo.sh press_button demo_clean_aloha svlr_debug 0 "press the button"
 
 cd "$(dirname "$0")/../.."
 
 TASK_NAME="${1:-press_button}"
-TASK_CONFIG="${2:-demo_clean_franka}"
+TASK_CONFIG="${2:-demo_clean_aloha}"
 CKPT_SETTING="${3:-svlr_debug}"
 SEED="${4:-0}"
 GLOBAL_TASK="${5:-press the button}"

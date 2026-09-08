@@ -1,7 +1,7 @@
 # Basic experiment configuration
 policy_name: SVLR
 task_name: press_button
-task_config: demo_clean_franka
+task_config: demo_clean_aloha
 ckpt_setting: svlr_debug
 seed: 0
 instruction_type: unseen

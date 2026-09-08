@@ -24,7 +24,7 @@ Recommended first test:
 ```bash
 pixi run -e svlr python script/eval_svlr.py --config policy/SVLR/deploy_policy.yml --overrides \
   --task_name press_button \
-  --task_config demo_clean_franka \
+  --task_config demo_clean_aloha \
   --policy_name SVLR \
   --ckpt_setting svlr_debug \
   --seed 0 \

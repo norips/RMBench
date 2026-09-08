@@ -3,10 +3,10 @@ set -euo pipefail
 
 # RMBench-style wrapper, aligned with the SVLR demo command.
 # Usage from policy/SVLR:
-#   bash eval.sh press_button demo_clean_franka svlr_debug 0 0 "press the button"
+#   bash eval.sh press_button demo_clean_aloha svlr_debug 0 0 "press the button"
 
 TASK_NAME="${1:-press_button}"
-TASK_CONFIG="${2:-demo_clean_franka}"
+TASK_CONFIG="${2:-demo_clean_aloha}"
 CKPT_SETTING="${3:-svlr_debug}"
 SEED="${4:-0}"
 GPU_ID="${5:-0}"
