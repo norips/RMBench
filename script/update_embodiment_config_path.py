@@ -57,6 +57,60 @@ REQUIRED_BY_EMBODIMENT = {
 }
 
 
+# Embodiment base placement, applied to config.yml on every configure run.
+#
+# config.yml lives under assets/, which is downloaded and gitignored, so a pose
+# edited by hand there is lost on the next fresh setup and is recorded nowhere.
+# SVLR's aloha calibration -- workspace_bounds_m, command_z_bounds_m and the
+# reachability reasoning in RMBENCH_ALOHA_action.json -- is all measured against
+# this placement, so it has to come from a versioned file.
+ROBOT_POSE_BY_EMBODIMENT = {
+    "aloha-agilex": (
+        "# Base translated -0.306 m in world X so the RIGHT arm is centred on the table\n"
+        "# (1.2 x 0.7, centred at the origin) instead of sitting off its +X end: the\n"
+        "# right shoulder moves from x=+0.306 to x=0.000. With the fingers pointing\n"
+        "# down the arm reaches 0.59 m in any direction from that shoulder, which the\n"
+        "# old placement left 23 cm short of the far -X corner of the workspace.\n"
+        "# Y is untouched on purpose -- the shoulder is already only 0.07 m behind the\n"
+        "# table's near edge, so moving forward would put the arm column over the top.\n",
+        "robot_pose: [[-0.306, -0.65, 0.25, 0.707, 0, 0, 0.707]]",
+    ),
+}
+
+
+def apply_robot_poses(repo_root: Path) -> None:
+    """Force each configured embodiment's robot_pose in its config.yml.
+
+    Only the embodiments named above are touched, and only their robot_pose
+    line; everything else in the file is left exactly as downloaded.
+    """
+    for name, (comment, pose_line) in ROBOT_POSE_BY_EMBODIMENT.items():
+        config = repo_root / "assets" / "embodiments" / name / "config.yml"
+        if not config.exists():
+            print_color(
+                f"[embodiment-config] {name}: no config.yml yet, skipping robot_pose",
+                YELLOW,
+            )
+            continue
+        lines = config.read_text(encoding="utf-8").splitlines(keepends=True)
+        kept = [line for line in lines if not line.startswith("robot_pose:")]
+        block = comment + pose_line + "\n"
+        if "".join(kept) == "".join(lines) and block in "".join(lines):
+            continue
+        # Drop a previously written copy of the comment so re-runs do not stack it.
+        text = "".join(kept).replace(comment, "")
+        if len(kept) == len(lines):
+            text = text.rstrip("\n") + "\n" + block
+        else:
+            index = next(i for i, line in enumerate(lines) if line.startswith("robot_pose:"))
+            head = "".join(kept[:index]).replace(comment, "")
+            tail = "".join(kept[index:])
+            text = head + block + tail
+        if text != "".join(lines):
+            config.write_text(text, encoding="utf-8")
+            print_color(f"[embodiment-config] {name}: robot_pose set", BLUE)
+
+
 def print_color(message: str, color_code: str) -> None:
     print(f"{color_code}{message}{RESET}")
 
@@ -191,6 +245,7 @@ def main() -> None:
     args = parse_args()
     repo_root = repo_root_from_args(args.repo_root)
     generate_configs(repo_root)
+    apply_robot_poses(repo_root)
     if not args.no_validate:
         for name in args.validate:
             validate_embodiment(repo_root, name)
