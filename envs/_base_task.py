@@ -1770,10 +1770,40 @@ class Base_Task(gym.Env):
                     right_n_step = right_result["position"].shape[0]
                     topp_right_flag = True
 
+            # Both arms, not just the left one. For a dual-arm embodiment driven
+            # through one slot (aloha via --sim_arm right) the left plan is a
+            # hold and always succeeds, so a left-only line says nothing about
+            # the arm that is actually moving. A failed plan sets topp_*_flag
+            # False, which skips set_arm_joints entirely for that arm while
+            # still running set_gripper -- the arm ignores the commanded pose
+            # but the gripper still opens.
+            svlr_right_status = right_result["status"] if self.is_dual_arm else "n/a"
+            svlr_right_steps = right_n_step if self.is_dual_arm else 0
             print(
                 "\n[SVLR dense-ee] "
                 f"left_plan_seconds={svlr_left_plan_seconds:.3f} "
-                f"left_status={left_result['status']} left_trajectory_steps={left_n_step}"
+                f"left_status={left_result['status']} left_trajectory_steps={left_n_step} "
+                f"left_driven={topp_left_flag} "
+                f"right_status={svlr_right_status} right_trajectory_steps={svlr_right_steps} "
+                f"right_driven={topp_right_flag if self.is_dual_arm else False}"
+            )
+            if left_result["status"] != "Success" or (
+                self.is_dual_arm and right_result["status"] != "Success"
+            ):
+                print(
+                    "[SVLR dense-ee] PLAN FAILED -- that arm keeps its previous "
+                    "joint targets for this action; the gripper is still driven"
+                )
+            try:
+                svlr_ee_before = (
+                    self.robot.get_right_ee_pose()
+                    if self.is_dual_arm
+                    else self.robot.get_left_ee_pose()
+                )
+            except Exception:
+                svlr_ee_before = None
+            svlr_ee_target = (
+                right_arm_actions[0] if self.is_dual_arm else left_arm_actions[0]
             )
 
         # ========== Gripper ==========
@@ -1881,6 +1911,52 @@ class Base_Task(gym.Env):
             f"left_steps_executed={now_left_id} "
             f"viewer_render_stride={svlr_dense_render_stride}"
         )
+        if action_type == 'ee':
+            # Commanded vs reached, for the arm that was actually driven, plus
+            # how far the joints ended from the trajectory's own last waypoint.
+            # A small joint error with a large pose error means the plan did not
+            # end where it was asked to; a large joint error means the arm did
+            # not track the plan (contact, or the drive giving up).
+            try:
+                driven = "right" if self.is_dual_arm else "left"
+                ee_now = (
+                    self.robot.get_right_ee_pose()
+                    if self.is_dual_arm
+                    else self.robot.get_left_ee_pose()
+                )
+                target = np.asarray(svlr_ee_target, dtype=np.float64).reshape(-1)
+                reached = np.asarray(ee_now, dtype=np.float64).reshape(-1)
+                pos_err = float(np.linalg.norm(reached[:3] - target[:3]))
+                moved = (
+                    float(np.linalg.norm(reached[:3] - np.asarray(svlr_ee_before)[:3]))
+                    if svlr_ee_before is not None
+                    else float("nan")
+                )
+                res = right_result if self.is_dual_arm else left_result
+                flag = topp_right_flag if self.is_dual_arm else topp_left_flag
+                if flag and res.get("position") is not None:
+                    # *real* joint state: get_*_arm_jointState returns the
+                    # drive targets, which trivially equal the plan and hide any
+                    # tracking failure. get_*_arm_real_jointState reads qpos.
+                    qpos_now = np.asarray(
+                        self.robot.get_right_arm_real_jointState()
+                        if self.is_dual_arm
+                        else self.robot.get_left_arm_real_jointState(),
+                        dtype=np.float64,
+                    )[: res["position"].shape[1]]
+                    joint_err = float(
+                        np.max(np.abs(qpos_now - res["position"][-1]))
+                    )
+                else:
+                    joint_err = float("nan")
+                print(
+                    f"[SVLR dense-ee] {driven}_arm target={np.round(target[:3], 4).tolist()} "
+                    f"reached={np.round(reached[:3], 4).tolist()} "
+                    f"pos_err={pos_err:.4f} travelled={moved:.4f} "
+                    f"max_joint_err_vs_plan_end={joint_err:.4f} driven={flag}"
+                )
+            except Exception as exc:
+                print(f"[SVLR dense-ee] pose diag unavailable: {exc}")
 
 
     def save_camera_images(self, task_name, step_name, generate_num_id, save_dir="./camera_images"):

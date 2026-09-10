@@ -142,6 +142,55 @@ try:
 
             result = self.motion_gen.plan_single(start_joint_states, goal_pose_of_ee, plan_config)
 
+            # Curobo's own view of the solve. It reports Success on its pose
+            # thresholds; if those are loose (or the goal frame handed in is not
+            # the one the caller meant) the plan can end far from the requested
+            # pose while still being "successful", and the arm then tracks that
+            # plan exactly to the wrong place.
+            def _num(value):
+                try:
+                    return float(value.item())
+                except Exception:
+                    try:
+                        return float(value)
+                    except Exception:
+                        return float("nan")
+
+            # Where Curobo thinks the arm starts, in its own frame, versus the
+            # goal it was handed, plus the start joint configuration itself.
+            # Curobo seeds its solve from this configuration, so two attempts at
+            # an identical goal can behave completely differently; diffing the
+            # start state between a reaching attempt and a stalling one is what
+            # separates "bad goal" from "bad seed".
+            try:
+                _fk = self.motion_gen.compute_kinematics(start_joint_states)
+                _p = _fk.ee_pos_seq.detach().cpu().numpy().reshape(-1)[:3]
+                _q = _fk.ee_quat_seq.detach().cpu().numpy().reshape(-1)[:4]
+                _g = np.asarray(target_pose_p, dtype=np.float64).reshape(-1)[:3]
+                _j = np.asarray(joint_angles, dtype=np.float64).reshape(-1)
+                print(
+                    f"[curobo {arms_tag}] start_ee=[{_p[0]:.4f},{_p[1]:.4f},{_p[2]:.4f}] "
+                    f"start_quat=[{_q[0]:.3f},{_q[1]:.3f},{_q[2]:.3f},{_q[3]:.3f}] "
+                    f"goal=[{_g[0]:.4f},{_g[1]:.4f},{_g[2]:.4f}] "
+                    f"start_to_goal={float(np.linalg.norm(_p - _g)):.4f} "
+                    f"start_q={np.round(_j, 4).tolist()}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[curobo {arms_tag}] start-fk diag unavailable: {exc}", flush=True)
+
+            svlr_pos_err = _num(getattr(result, "position_error", float("nan")))
+            svlr_rot_err = _num(getattr(result, "rotation_error", float("nan")))
+            if not (svlr_pos_err < 0.005) or result.success.item() == False:
+                print(
+                    f"[curobo {arms_tag}] success={result.success.item()} "
+                    f"curobo_position_error={svlr_pos_err:.4f} "
+                    f"curobo_rotation_error={svlr_rot_err:.4f} "
+                    f"status={getattr(result, 'status', None)} "
+                    f"goal_in_base=[{target_pose_p[0]:.4f},{target_pose_p[1]:.4f},{target_pose_p[2]:.4f}]",
+                    flush=True,
+                )
+
             # output
             res_result = dict()
             if result.success.item() == False:
