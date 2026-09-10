@@ -111,6 +111,81 @@ def apply_robot_poses(repo_root: Path) -> None:
             print_color(f"[embodiment-config] {name}: robot_pose set", BLUE)
 
 
+# Joint limits forced into an embodiment's URDF on every configure run.
+#
+# The shipped arx5_description_isaac.urdf gives every revolute joint a
+# placeholder range of +/-10 rad (+/-573 deg). Curobo reads its limits from that
+# URDF, so it is free to return solutions more than a full turn from the real
+# mechanism -- measured on cover_blocks, fr_joint3 reached 4.49 rad. Those poses
+# are kinematically valid to the planner and physically jammed on the robot: the
+# arm then ends up to 0.48 rad from the configuration its own plan asked for and
+# misses the commanded pose by ~90 mm, while Curobo still reports success.
+#
+# The real range comes from aloha_new.urdf in the same directory, mirrored into
+# this URDF's sign convention: aloha_new declares fr_joint3 as [-2.697, 0], and
+# 310 observed configurations of the running arm put it in [0, +1.418], so the
+# two models run this joint in opposite directions.
+#
+# Constraining it removed every one of the 12 catastrophic misses on a 5-episode
+# cover_blocks run (max pose error 93 mm -> 22 mm, 0/5 -> 3/5 episodes), at the
+# cost of a slightly looser median (1.8 mm -> 5.9 mm) because the planner can no
+# longer pick the wrapped IK branch.
+#
+# Like the robot_pose above, this lives here because assets/ is downloaded and
+# gitignored: edited by hand it is lost on the next fresh setup.
+JOINT_LIMITS_BY_EMBODIMENT = {
+    "aloha-agilex": {
+        "urdf/arx5_description_isaac.urdf": {
+            "fr_joint3": (0.0, 2.697),
+        },
+    },
+}
+
+
+def apply_joint_limits(repo_root: Path) -> None:
+    """Force the configured <limit lower/upper> for named joints.
+
+    Only the lower and upper attributes of the named joints are touched; the
+    effort and velocity on the same tag, and every other joint in the file, are
+    left exactly as downloaded.
+    """
+    for name, files in JOINT_LIMITS_BY_EMBODIMENT.items():
+        for rel_path, joints in files.items():
+            urdf = repo_root / "assets" / "embodiments" / name / rel_path
+            if not urdf.exists():
+                print_color(
+                    f"[embodiment-config] {name}: {rel_path} not present yet, "
+                    "skipping joint limits",
+                    YELLOW,
+                )
+                continue
+            text = urdf.read_text(encoding="utf-8")
+            original = text
+            for joint, (lower, upper) in joints.items():
+                pattern = re.compile(
+                    r'(<joint name="' + re.escape(joint) + r'" type="revolute">.*?'
+                    r'<limit lower=")[-0-9.eE]+(" upper=")[-0-9.eE]+(")',
+                    re.DOTALL,
+                )
+                text, count = pattern.subn(
+                    lambda m: f"{m.group(1)}{lower}{m.group(2)}{upper}{m.group(3)}",
+                    text,
+                    count=1,
+                )
+                if count == 0:
+                    print_color(
+                        f"[embodiment-config] {name}: no revolute joint "
+                        f"{joint!r} with a <limit> in {rel_path}",
+                        YELLOW,
+                    )
+            if text != original:
+                urdf.write_text(text, encoding="utf-8")
+                print_color(
+                    f"[embodiment-config] {name}: joint limits set in {rel_path}",
+                    BLUE,
+                )
+
+
 def print_color(message: str, color_code: str) -> None:
     print(f"{color_code}{message}{RESET}")
 
@@ -246,6 +321,7 @@ def main() -> None:
     repo_root = repo_root_from_args(args.repo_root)
     generate_configs(repo_root)
     apply_robot_poses(repo_root)
+    apply_joint_limits(repo_root)
     if not args.no_validate:
         for name in args.validate:
             validate_embodiment(repo_root, name)
