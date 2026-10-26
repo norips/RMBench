@@ -378,7 +378,17 @@ def eval_policy(task_name,
 
         args["render_freq"] = render_freq
 
-        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        try:
+            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        except UnStableError as e:
+            # Unstable scene: drop this seed and move on instead of crashing the run.
+            print(f"[SVLR eval] skipping unstable seed {now_seed}: {e}")
+            TASK_ENV.close_env()
+            succ_seed -= 1
+            suc_test_seed_list.pop()
+            now_seed += 1
+            continue
+
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
         if global_task is not None and str(global_task).strip():
